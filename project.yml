@@ -3,6 +3,10 @@ options:
   bundleIdPrefix: com.lalitmangal
   deploymentTarget:
     iOS: "18.0"
+  # Local.xcconfig is deliberately untracked, so generating the project on a
+  # fresh clone must not fail just because it isn't there yet.
+  disabledValidations:
+    - missingConfigFiles
 targets:
   SwitchBlade:
     type: application
@@ -10,13 +14,18 @@ targets:
     deploymentTarget: "18.0"
     sources:
       - path: SwitchBlade
+    # Signing identity lives here rather than in this file, so a Team ID never
+    # lands in the repository and a regenerated project keeps working. Copy
+    # Local.xcconfig.example to Local.xcconfig and fill in your team.
+    configFiles:
+      Debug: Local.xcconfig
+      Release: Local.xcconfig
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.lalitmangal.SwitchBlade
         PRODUCT_NAME: SwitchBlade
         MARKETING_VERSION: "1.0"
         CURRENT_PROJECT_VERSION: "1"
-        DEVELOPMENT_TEAM: ""
         SWIFT_VERSION: "5.0"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         # Selectable in Settings. Both keys are needed: the second is what

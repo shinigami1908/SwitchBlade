@@ -1,0 +1,13 @@
+// Copy this file to Local.xcconfig and fill in your own team, then run
+// `xcodegen generate`. Local.xcconfig is untracked, so your signing identity
+// stays off GitHub and survives regenerating the project.
+//
+// Find your Team ID with:
+//
+//     security find-certificate -c "Apple Development" -p \
+//       | openssl x509 -noout -subject
+//
+// It's the OU field. A free Apple ID works — apps signed with one stop
+// launching after seven days and need reinstalling.
+
+DEVELOPMENT_TEAM = ABCDE12345

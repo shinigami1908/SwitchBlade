@@ -1,5 +1,6 @@
-# Build output
-build/
+# Build output. Globbed because -derivedDataPath is often given a suffixed
+# directory, such as build-device for a signed build.
+build*/
 DerivedData/
 *.ipa
 *.dSYM.zip
@@ -21,6 +22,11 @@ xcuserdata/
 .swiftpm/
 Packages/
 Package.resolved
+
+# Local signing identity. Copy Local.xcconfig.example to create it — keeping
+# it untracked keeps a Team ID out of the repository, and means pulling
+# changes never clobbers your own signing setup.
+Local.xcconfig
 
 # Local tool configuration — machine-specific, not part of the app
 .claude/settings.local.json

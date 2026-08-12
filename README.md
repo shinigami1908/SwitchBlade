@@ -32,6 +32,23 @@ xcodegen generate && open SwitchBlade.xcodeproj
 
 Run that again after adding or removing a source file.
 
+### Signing
+
+To run on a real device, put your Team ID in an untracked config file so it survives regenerating the project and never reaches the repository:
+
+```bash
+cp Local.xcconfig.example Local.xcconfig   # then edit in your team
+xcodegen generate
+```
+
+Find your Team ID — the `OU` field — with:
+
+```bash
+security find-certificate -c "Apple Development" -p | openssl x509 -noout -subject
+```
+
+A free Apple ID is enough. Apps signed with one stop launching after seven days and need reinstalling; a paid Developer Program membership extends that to a year. The simulator needs no signing at all.
+
 ## API keys
 
 The app needs a couple of free API keys to fill in metadata. **Add them in Settings → API Keys inside the app** — each key is written to the iOS keychain and never to preferences, never to a file in this repo, and never off the device except to the service it belongs to.
