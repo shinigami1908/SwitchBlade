@@ -1,0 +1,37 @@
+name: SwitchBlade
+options:
+  bundleIdPrefix: com.lalitmangal
+  deploymentTarget:
+    iOS: "18.0"
+targets:
+  SwitchBlade:
+    type: application
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - path: SwitchBlade
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.lalitmangal.SwitchBlade
+        PRODUCT_NAME: SwitchBlade
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        DEVELOPMENT_TEAM: ""
+        SWIFT_VERSION: "5.0"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Selectable in Settings. Both keys are needed: the second is what
+        # actually compiles the alternates into the bundle.
+        ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES: AppIconLight AppIconDark AppIconNeon
+        ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS: true
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        # Designed for iPhone; iPad would need a different layout entirely.
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: true
+        INFOPLIST_KEY_UILaunchScreen_Generation: true
+        INFOPLIST_KEY_UIStatusBarStyle: UIStatusBarStyleDefault
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationPortrait
+        # Required, or CoreLocation silently refuses the authorization request.
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: >-
+          SwitchBlade shows your city and current conditions on the home screen.
+          Your location is used only for that and never leaves the device except
+          as coordinates sent to the weather service.
