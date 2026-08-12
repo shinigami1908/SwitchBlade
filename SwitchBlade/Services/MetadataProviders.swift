@@ -171,12 +171,18 @@ struct TMDBService: Sendable {
     private struct Details: Decodable {
         let runtime: Int?
         let episodeRunTime: [Int]?
+        let lastEpisodeToAir: Episode?
+        let nextEpisodeToAir: Episode?
         let credits: Credits?
         let externalIDs: ExternalIDs?
+
+        struct Episode: Decodable { let runtime: Int? }
 
         enum CodingKeys: String, CodingKey {
             case runtime
             case episodeRunTime = "episode_run_time"
+            case lastEpisodeToAir = "last_episode_to_air"
+            case nextEpisodeToAir = "next_episode_to_air"
             case credits
             case externalIDs = "external_ids"
         }
@@ -209,9 +215,17 @@ struct TMDBService: Sendable {
 
         let details = try await HTTPClient.shared.get(url, as: Details.self)
 
-        // A film reports one runtime; a series reports its typical episode
-        // length, which is the more useful number when deciding what to start.
-        let runtime = details.runtime ?? details.episodeRunTime?.first ?? 0
+        // A film reports one runtime. A series is messier: TMDB has been
+        // moving away from `episode_run_time` towards per-episode runtimes, so
+        // it comes back empty for a great many shows — Mindhunter and Modern
+        // Family among them. The aired episodes carry the number instead, so
+        // they're the fallback. Either way this is an episode length, which is
+        // the useful figure when deciding what to start tonight.
+        let runtime = details.runtime
+            ?? details.episodeRunTime?.first(where: { $0 > 0 })
+            ?? details.lastEpisodeToAir?.runtime
+            ?? details.nextEpisodeToAir?.runtime
+            ?? 0
 
         let cast = (details.credits?.cast ?? [])
             .sorted { ($0.order ?? .max) < ($1.order ?? .max) }
