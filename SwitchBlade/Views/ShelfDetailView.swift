@@ -10,6 +10,7 @@ struct ShelfDetailView: View {
     @State private var sort: SortOption = .recentlyAdded
     @State private var activeGenres: Set<String> = []
     @State private var activeVibes: Set<String> = []
+    @State private var activeRuntimes: Set<String> = []
     @State private var showingFilters = false
     @State private var showingAdd = false
     @State private var showingImport = false
@@ -66,6 +67,17 @@ struct ShelfDetailView: View {
             items = items.filter { !activeVibes.isDisjoint(with: Set($0.vibesList)) }
         }
 
+        if !activeRuntimes.isEmpty {
+            let bands = availableRuntimeBands.filter { activeRuntimes.contains($0.label) }
+            items = items.filter { item in
+                // An entry with no runtime is excluded rather than kept: asking
+                // for "under 90 minutes" shouldn't return things of unknown
+                // length.
+                item.runtimeMinutes > 0
+                    && bands.contains { $0.range.contains(item.runtimeMinutes) }
+            }
+        }
+
         switch sort {
         case .recentlyAdded:
             return items.sorted { $0.dateAdded > $1.dateAdded }
@@ -86,12 +98,42 @@ struct ShelfDetailView: View {
         Set(shelf.items.flatMap(\.vibesList)).sorted()
     }
 
+    /// Only bands that some entry actually falls into, so the sheet can't offer
+    /// a length that returns nothing.
+    private var availableRuntimeBands: [RuntimeBand] {
+        let lengths = shelf.items.map(\.runtimeMinutes).filter { $0 > 0 }
+        guard !lengths.isEmpty else { return [] }
+        return RuntimeBand.bands(for: shelf.kind).filter { band in
+            lengths.contains { band.range.contains($0) }
+        }
+    }
+
     private var activeFilterCount: Int {
-        activeGenres.count + activeVibes.count
+        activeGenres.count + activeVibes.count + activeRuntimes.count
     }
 
     private var failedItems: [ShelfItem] {
         shelf.items.filter { $0.enrichment == .failed }
+    }
+
+    /// Entries that filled in fine but never got their tags — the state a
+    /// rate-limited bulk import leaves behind. They aren't failed, so the retry
+    /// banner never sees them.
+    private var untaggedItems: [ShelfItem] {
+        shelf.items.filter {
+            $0.vibesList.isEmpty && $0.enrichment == .completed
+        }
+    }
+
+    /// Entries filled in before runtime was a field. Only TMDB-sourced ones can
+    /// be backfilled, which is why this isn't simply "runtime is zero".
+    private var untimedItems: [ShelfItem] {
+        guard shelf.kind == .movie || shelf.kind == .tv else { return [] }
+        return shelf.items.filter {
+            $0.runtimeMinutes == 0
+                && $0.externalSource == "tmdb"
+                && $0.externalID != nil
+        }
     }
 
     var body: some View {
@@ -108,6 +150,24 @@ struct ShelfDetailView: View {
             if !failedItems.isEmpty {
                 Section {
                     retryBanner
+                        .listRowInsets(EdgeInsets(top: 6, leading: Metrics.gutter, bottom: 6, trailing: Metrics.gutter))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
+            }
+
+            if !untimedItems.isEmpty || enrichment.runtimesRemaining > 0 {
+                Section {
+                    runtimeBanner
+                        .listRowInsets(EdgeInsets(top: 6, leading: Metrics.gutter, bottom: 6, trailing: Metrics.gutter))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
+            }
+
+            if !untaggedItems.isEmpty || enrichment.vibesRemaining > 0 {
+                Section {
+                    vibeBanner
                         .listRowInsets(EdgeInsets(top: 6, leading: Metrics.gutter, bottom: 6, trailing: Metrics.gutter))
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
@@ -229,8 +289,10 @@ struct ShelfDetailView: View {
             FilterSheet(
                 genres: availableGenres,
                 vibes: availableVibes,
+                runtimeBands: availableRuntimeBands,
                 selectedGenres: $activeGenres,
-                selectedVibes: $activeVibes
+                selectedVibes: $activeVibes,
+                selectedRuntimes: $activeRuntimes
             )
         }
         .sheet(isPresented: $showingImport) { ImportView(preselectedShelf: shelf) }
@@ -281,10 +343,14 @@ struct ShelfDetailView: View {
                 ForEach(activeVibes.sorted(), id: \.self) { vibe in
                     RemovableChip(text: vibe) { activeVibes.remove(vibe) }
                 }
+                ForEach(activeRuntimes.sorted(), id: \.self) { runtime in
+                    RemovableChip(text: runtime) { activeRuntimes.remove(runtime) }
+                }
 
                 Button("Clear all") {
                     activeGenres.removeAll()
                     activeVibes.removeAll()
+                    activeRuntimes.removeAll()
                 }
                 .font(.caption.weight(.medium))
                 .tint(.appAccent)
@@ -294,6 +360,94 @@ struct ShelfDetailView: View {
     }
 
     // MARK: - Banners and empty state
+
+    /// Offers the length backfill for entries that predate the runtime field.
+    /// Separate from the vibe banner because this one is free — mixing them
+    /// would hide a no-cost action behind an AI-budget decision.
+    private var runtimeBanner: some View {
+        let isWorking = enrichment.runtimesRemaining > 0
+
+        return HStack(spacing: 10) {
+            Image(systemName: "clock")
+                .foregroundStyle(Color.appAccentAlt)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(isWorking
+                     ? "Fetching lengths — \(enrichment.runtimesRemaining) to go"
+                     : "\(untimedItems.count) without a length")
+                    .font(.footnote.weight(.medium))
+
+                Text("From TMDB, so it costs nothing against your AI budget.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 6)
+
+            if isWorking {
+                ProgressView().controlSize(.small)
+            } else {
+                Button("Get lengths") {
+                    enrichment.fillMissingRuntimes(for: untimedItems, in: modelContext)
+                }
+                .font(.footnote.weight(.semibold))
+                .buttonStyle(.bordered)
+                .tint(.appAccentAlt)
+                .controlSize(.small)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface(radius: Metrics.controlRadius)
+    }
+
+    /// Offers the tag backfill, and is the one place a vibe failure is ever
+    /// reported — it used to be recorded and never shown.
+    private var vibeBanner: some View {
+        let isWorking = enrichment.vibesRemaining > 0
+
+        return HStack(spacing: 10) {
+            Image(systemName: isWorking ? "sparkles" : "tag")
+                .foregroundStyle(Color.appAccent)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(isWorking
+                     ? "Adding vibes — \(enrichment.vibesRemaining) to go"
+                     : "\(untaggedItems.count) without vibes")
+                    .font(.footnote.weight(.medium))
+
+                if let message = enrichment.lastVibeError {
+                    Text(message)
+                        .font(.caption2)
+                        .foregroundStyle(Color.appWarning)
+                        .lineLimit(2)
+                } else {
+                    Text("Sent \(EnrichmentService.vibeChunkSize) at a time, spaced out to stay under the model's rate limit.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 6)
+
+            if isWorking {
+                ProgressView().controlSize(.small)
+            } else {
+                Button("Add vibes") {
+                    enrichment.fillMissingVibes(for: untaggedItems, in: modelContext)
+                }
+                .font(.footnote.weight(.semibold))
+                .buttonStyle(.bordered)
+                .tint(.appAccent)
+                .controlSize(.small)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface(radius: Metrics.controlRadius)
+    }
 
     private var retryBanner: some View {
         HStack(spacing: 10) {
@@ -570,8 +724,17 @@ struct ItemRow: View {
                         .monospacedDigit()
                 }
 
-                if !item.genre.isEmpty {
+                if let runtime = item.runtimeLabel {
                     if item.year != nil {
+                        Text("·").foregroundStyle(.tertiary)
+                    }
+                    Text(runtime)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                if !item.genre.isEmpty {
+                    if item.year != nil || item.runtimeLabel != nil {
                         Text("·").foregroundStyle(.tertiary)
                     }
                     Text(item.genre)

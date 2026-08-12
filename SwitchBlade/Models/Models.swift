@@ -121,6 +121,10 @@ final class ShelfItem {
     /// Top-billed cast for film and TV; studio for a game. Defaulted so
     /// entries stored before this field existed still load.
     var castList: [String] = []
+    /// Length in minutes: the film's runtime, or a series' typical episode
+    /// length. Zero means the provider didn't say. Defaulted so entries stored
+    /// before this field existed still load.
+    var runtimeMinutes: Int = 0
     /// 0–10. Zero means "not rated yet".
     var rating: Double
     /// "IMDb", "TMDB", "Metacritic", "AI estimate" — shown next to the score so
@@ -155,6 +159,17 @@ final class ShelfItem {
         genre.split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
+    }
+
+    /// "1h 47m" / "48m". Nil when the provider had no runtime, so callers can
+    /// omit the field entirely rather than print a zero.
+    var runtimeLabel: String? {
+        guard runtimeMinutes > 0 else { return nil }
+        let hours = runtimeMinutes / 60
+        let minutes = runtimeMinutes % 60
+        if hours == 0 { return "\(minutes)m" }
+        if minutes == 0 { return "\(hours)h" }
+        return "\(hours)h \(minutes)m"
     }
 
     var posterURL: URL? {

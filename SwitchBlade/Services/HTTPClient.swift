@@ -71,19 +71,46 @@ struct HTTPClient: Sendable {
         self.session = URLSession(configuration: config)
     }
 
+    /// Statuses worth a second try. 429 is the one that matters: Gemini's free
+    /// tier caps requests per minute, and a bulk import walks straight into it.
+    /// The 5xx entries cover a provider briefly falling over.
+    private static let retryableStatuses: Set<Int> = [429, 500, 502, 503, 504]
+
+    private static let maxAttempts = 4
+
+    /// Every request funnels through here, so a rate limit is absorbed once
+    /// rather than handled — or forgotten — by each provider.
+    ///
+    /// Retrying a POST is normally unsafe, but the only POSTs here are model
+    /// and token requests, which have no side effects worth protecting.
     func data(for request: URLRequest) async throws -> Data {
-        let (data, response) = try await session.data(for: request)
+        var attempt = 1
 
-        guard let http = response as? HTTPURLResponse else {
-            throw ServiceError.http(-1, "Non-HTTP response")
-        }
+        while true {
+            let (data, response) = try await session.data(for: request)
 
-        guard (200...299).contains(http.statusCode) else {
+            guard let http = response as? HTTPURLResponse else {
+                throw ServiceError.http(-1, "Non-HTTP response")
+            }
+
+            if (200...299).contains(http.statusCode) { return data }
+
             let body = String(data: data, encoding: .utf8) ?? ""
-            throw ServiceError.http(http.statusCode, body)
-        }
 
-        return data
+            guard Self.retryableStatuses.contains(http.statusCode),
+                  attempt < Self.maxAttempts
+            else {
+                throw ServiceError.http(http.statusCode, body)
+            }
+
+            // Providers that know when they'll be ready say so; otherwise back
+            // off exponentially from two seconds.
+            let advised = http.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init)
+            let delay = min(advised ?? pow(2, Double(attempt)), 30)
+            try await Task.sleep(for: .seconds(delay))
+
+            attempt += 1
+        }
     }
 
     /// Sends a fully-formed request. Needed by providers whose bodies aren't

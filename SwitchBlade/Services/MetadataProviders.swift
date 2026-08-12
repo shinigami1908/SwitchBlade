@@ -19,6 +19,9 @@ struct MetadataResult: Sendable {
     /// Top-billed cast for a film or series; developer and publisher for a
     /// game. Empty when the provider has nothing.
     var people: [String] = []
+    /// Film runtime, or a series' typical episode length, in minutes. Zero when
+    /// the provider doesn't say.
+    var runtimeMinutes: Int = 0
 }
 
 // MARK: - TMDB (films and television)
@@ -165,29 +168,62 @@ struct TMDBService: Sendable {
         return result
     }
 
-    /// Top-billed cast, in the order TMDB bills them.
-    func cast(for tmdbID: String, kind: ShelfKind, apiKey: String, limit: Int = 6) async throws -> [String] {
-        let path = kind == .tv ? "tv" : "movie"
-        guard let url = URL.build("\(base)/\(path)/\(tmdbID)/credits", ["api_key": apiKey]) else {
-            throw ServiceError.badURL
+    private struct Details: Decodable {
+        let runtime: Int?
+        let episodeRunTime: [Int]?
+        let credits: Credits?
+        let externalIDs: ExternalIDs?
+
+        enum CodingKeys: String, CodingKey {
+            case runtime
+            case episodeRunTime = "episode_run_time"
+            case credits
+            case externalIDs = "external_ids"
         }
-        let credits = try await HTTPClient.shared.get(url, as: Credits.self)
-        return (credits.cast ?? [])
-            .sorted { ($0.order ?? .max) < ($1.order ?? .max) }
-            .compactMap(\.name)
-            .prefix(limit)
-            .map { $0 }
     }
 
-    /// Resolves the IMDb id for a TMDB entry so OMDb can be queried for the
-    /// authoritative rating.
-    func imdbID(for tmdbID: String, kind: ShelfKind, apiKey: String) async throws -> String? {
+    /// Runtime, cast, and the IMDb id — everything the search result doesn't
+    /// carry.
+    ///
+    /// These were three separate requests. `append_to_response` folds them into
+    /// one, which is worth having when a bulk import fires them for a couple of
+    /// hundred titles at once.
+    struct Supplement: Sendable {
+        var runtimeMinutes = 0
+        var cast: [String] = []
+        var imdbID: String?
+    }
+
+    func supplement(
+        for tmdbID: String,
+        kind: ShelfKind,
+        apiKey: String,
+        castLimit: Int = 6
+    ) async throws -> Supplement {
         let path = kind == .tv ? "tv" : "movie"
-        guard let url = URL.build("\(base)/\(path)/\(tmdbID)/external_ids", ["api_key": apiKey]) else {
-            throw ServiceError.badURL
-        }
-        let ids = try await HTTPClient.shared.get(url, as: ExternalIDs.self)
-        return ids.imdbID
+        guard let url = URL.build("\(base)/\(path)/\(tmdbID)", [
+            "api_key": apiKey,
+            "append_to_response": "credits,external_ids",
+            "language": "en-US"
+        ]) else { throw ServiceError.badURL }
+
+        let details = try await HTTPClient.shared.get(url, as: Details.self)
+
+        // A film reports one runtime; a series reports its typical episode
+        // length, which is the more useful number when deciding what to start.
+        let runtime = details.runtime ?? details.episodeRunTime?.first ?? 0
+
+        let cast = (details.credits?.cast ?? [])
+            .sorted { ($0.order ?? .max) < ($1.order ?? .max) }
+            .compactMap(\.name)
+            .prefix(castLimit)
+            .map { $0 }
+
+        return Supplement(
+            runtimeMinutes: max(0, runtime),
+            cast: cast,
+            imdbID: details.externalIDs?.imdbID
+        )
     }
 
     /// Prefers an exact title match, then a year match, then popularity — TMDB's

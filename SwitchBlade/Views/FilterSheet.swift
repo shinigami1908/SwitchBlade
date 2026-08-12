@@ -1,25 +1,61 @@
 import SwiftUI
 
-/// Genre and vibe filters for a shelf.
+/// A length band offered in the filter.
 ///
-/// Both lists are built from what is actually on the shelf, so every option
-/// here returns at least one entry.
+/// Films and episodes need different cut-offs — 45 minutes is a short film and
+/// a long episode — so the bands come from the shelf's kind rather than being
+/// one fixed set. Games have no runtime and get none.
+struct RuntimeBand: Identifiable, Hashable {
+    let label: String
+    let range: ClosedRange<Int>
+
+    var id: String { label }
+
+    static func bands(for kind: ShelfKind) -> [RuntimeBand] {
+        switch kind {
+        case .tv:
+            return [
+                RuntimeBand(label: "Under 30m", range: 1...29),
+                RuntimeBand(label: "30–60m", range: 30...60),
+                RuntimeBand(label: "Over 60m", range: 61...10_000)
+            ]
+        case .movie, .custom:
+            return [
+                RuntimeBand(label: "Under 1h 30m", range: 1...89),
+                RuntimeBand(label: "1h 30m – 2h", range: 90...120),
+                RuntimeBand(label: "2h – 2h 30m", range: 121...150),
+                RuntimeBand(label: "Over 2h 30m", range: 151...10_000)
+            ]
+        case .game:
+            return []
+        }
+    }
+}
+
+/// Genre, vibe, and length filters for a shelf.
+///
+/// Every list is built from what is actually on the shelf, so no option here
+/// can return nothing.
 struct FilterSheet: View {
     let genres: [String]
     let vibes: [String]
+    let runtimeBands: [RuntimeBand]
 
     @Binding var selectedGenres: Set<String>
     @Binding var selectedVibes: Set<String>
+    @Binding var selectedRuntimes: Set<String>
 
     @Environment(\.dismiss) private var dismiss
 
-    private var total: Int { selectedGenres.count + selectedVibes.count }
+    private var total: Int {
+        selectedGenres.count + selectedVibes.count + selectedRuntimes.count
+    }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    if genres.isEmpty && vibes.isEmpty {
+                    if genres.isEmpty && vibes.isEmpty && runtimeBands.isEmpty {
                         Text("Nothing to filter by yet. Genres and vibes appear once entries have filled in.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
@@ -41,6 +77,14 @@ struct FilterSheet: View {
                             selection: $selectedVibes
                         )
                     }
+
+                    if !runtimeBands.isEmpty {
+                        group(
+                            title: "Length",
+                            options: runtimeBands.map(\.label),
+                            selection: $selectedRuntimes
+                        )
+                    }
                 }
                 .padding(.horizontal, Metrics.gutter)
                 .padding(.vertical, 16)
@@ -53,6 +97,7 @@ struct FilterSheet: View {
                     Button("Clear") {
                         selectedGenres.removeAll()
                         selectedVibes.removeAll()
+                        selectedRuntimes.removeAll()
                     }
                     .disabled(total == 0)
                 }

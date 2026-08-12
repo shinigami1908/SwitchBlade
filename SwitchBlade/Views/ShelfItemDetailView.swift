@@ -115,11 +115,21 @@ struct ShelfItemDetailView: View {
                         .font(.system(.title3, design: .serif, weight: .semibold))
                         .fixedSize(horizontal: false, vertical: true)
 
-                    if let year = item.year {
-                        Text(String(year))
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .monospacedDigit()
+                    if item.year != nil || item.runtimeLabel != nil {
+                        HStack(spacing: 6) {
+                            if let year = item.year {
+                                Text(String(year))
+                                    .monospacedDigit()
+                            }
+                            if let runtime = item.runtimeLabel {
+                                if item.year != nil {
+                                    Text("·").foregroundStyle(.tertiary)
+                                }
+                                Text(runtime)
+                            }
+                        }
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
                     }
 
                     if !item.genre.isEmpty {

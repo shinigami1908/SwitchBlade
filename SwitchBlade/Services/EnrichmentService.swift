@@ -87,6 +87,175 @@ final class EnrichmentService {
         enrich([item], in: context)
     }
 
+    // MARK: - Vibe backfill
+
+    /// Titles per model call. The prompt asks for one line each, so this is
+    /// about how much output fits comfortably, not a rate limit.
+    static let vibeChunkSize = 20
+
+    /// Seconds between model calls. Gemini's free tier limits requests per
+    /// minute, and going out in a burst is what left a bulk import untagged.
+    private static let vibeCallSpacing = 4.5
+
+    /// Entries still waiting for tags in a backfill, for progress UI.
+    private(set) var vibesRemaining = 0
+
+    /// Adds vibe tags to entries that already have everything else.
+    ///
+    /// Deliberately separate from `enrich`: these entries aren't failed. They
+    /// have their metadata and merely missed their tags, which is what happens
+    /// when the model rate-limits partway through a large import — so they're
+    /// invisible to the ordinary retry path.
+    func fillMissingVibes(for items: [ShelfItem], in context: ModelContext) {
+        guard vibesRemaining == 0 else { return }
+
+        let targets: [Request] = items.compactMap { item in
+            guard item.vibesList.isEmpty, let shelf = item.shelf else { return nil }
+            // The year goes into the name here because this request is only
+            // ever used to build the prompt, and it stops the model tagging a
+            // remake it happens to know better.
+            let title = item.year.map { "\(item.name) (\($0))" } ?? item.name
+            return Request(id: item.id, name: title, shelfKind: shelf.kind, shelfName: shelf.name)
+        }
+
+        guard !targets.isEmpty else { return }
+
+        guard AppSettings.shared.key(for: .gemini) != nil else {
+            lastVibeError = ServiceError.missingKey("Gemini").errorDescription
+            return
+        }
+
+        lastVibeError = nil
+        vibesRemaining = targets.count
+
+        Task {
+            defer { vibesRemaining = 0 }
+
+            // One call per chunk, spaced out. The whole reason this action
+            // exists is that the import hit the per-minute limit, so firing
+            // everything at once would fail exactly the same way.
+            for group in Dictionary(grouping: targets, by: \.shelfKind) {
+                for chunk in group.value.chunked(into: Self.vibeChunkSize) {
+                    do {
+                        let results = try await GeminiService.shared.vibes(
+                            for: chunk.map(\.name),
+                            context: group.key.promptNoun
+                        )
+                        // Applied per chunk, so a failure halfway through keeps
+                        // everything already tagged.
+                        applyVibes(Self.align(results, to: chunk, key: \.title), in: context)
+                    } catch {
+                        let message = (error as? ServiceError)?.errorDescription
+                            ?? error.localizedDescription
+                        lastVibeError = message
+                        NSLog("[SwitchBlade] Vibe backfill failed: %@", message)
+
+                        // A spent budget or a bad key fails identically for
+                        // every remaining chunk, so stop rather than grind
+                        // through them all to reach the same message.
+                        if case ServiceError.budgetExhausted = error { return }
+                        if case ServiceError.missingKey = error { return }
+                    }
+
+                    vibesRemaining = max(0, vibesRemaining - chunk.count)
+                    try? await Task.sleep(for: .seconds(Self.vibeCallSpacing))
+                }
+            }
+        }
+    }
+
+    // MARK: - Runtime backfill
+
+    /// Entries still waiting for a length, for progress UI.
+    private(set) var runtimesRemaining = 0
+
+    /// Fetches lengths for entries that were filled in before runtime was a
+    /// field, so an existing library gains durations without being re-imported.
+    ///
+    /// Costs nothing against the AI budget — this is TMDB only — so it needs no
+    /// pacing beyond the small concurrency window used everywhere else.
+    func fillMissingRuntimes(for items: [ShelfItem], in context: ModelContext) {
+        guard runtimesRemaining == 0 else { return }
+
+        struct Target: Sendable {
+            let id: UUID
+            let tmdbID: String
+            let kind: ShelfKind
+        }
+
+        let targets: [Target] = items.compactMap { item in
+            guard item.runtimeMinutes == 0,
+                  item.externalSource == "tmdb",
+                  let externalID = item.externalID,
+                  let kind = item.shelf?.kind,
+                  kind == .movie || kind == .tv
+            else { return nil }
+            return Target(id: item.id, tmdbID: externalID, kind: kind)
+        }
+
+        guard !targets.isEmpty else { return }
+
+        guard let tmdbKey = AppSettings.shared.key(for: .tmdb) else {
+            lastError = ServiceError.missingKey("TMDB").errorDescription
+            return
+        }
+
+        runtimesRemaining = targets.count
+
+        Task {
+            defer { runtimesRemaining = 0 }
+
+            for chunk in targets.chunked(into: 4) {
+                var found: [(UUID, Int)] = []
+
+                await withTaskGroup(of: (UUID, Int).self) { group in
+                    for target in chunk {
+                        group.addTask {
+                            let supplement = try? await TMDBService.shared.supplement(
+                                for: target.tmdbID, kind: target.kind, apiKey: tmdbKey
+                            )
+                            return (target.id, supplement?.runtimeMinutes ?? 0)
+                        }
+                    }
+                    for await result in group where result.1 > 0 {
+                        found.append(result)
+                    }
+                }
+
+                applyRuntimes(found, in: context)
+                runtimesRemaining = max(0, runtimesRemaining - chunk.count)
+            }
+        }
+    }
+
+    private func applyRuntimes(_ pairs: [(UUID, Int)], in context: ModelContext) {
+        guard !pairs.isEmpty else { return }
+
+        let byID = Dictionary(uniqueKeysWithValues: pairs)
+        guard let all = try? context.fetch(FetchDescriptor<ShelfItem>()) else { return }
+
+        for item in all {
+            guard let minutes = byID[item.id], minutes > 0 else { continue }
+            item.runtimeMinutes = minutes
+        }
+
+        try? context.save()
+    }
+
+    private func applyVibes(_ pairs: [(Request, AIVibeResult)], in context: ModelContext) {
+        guard !pairs.isEmpty else { return }
+
+        let byID = Dictionary(uniqueKeysWithValues: pairs.map { ($0.0.id, $0.1) })
+        guard let all = try? context.fetch(FetchDescriptor<ShelfItem>()) else { return }
+
+        for item in all {
+            guard let result = byID[item.id], !result.vibes.isEmpty else { continue }
+            item.vibesList = Array(result.vibes.prefix(3))
+        }
+
+        try? context.save()
+    }
+
     // MARK: - Pipeline
 
     private func process(_ requests: [Request]) async -> [Outcome] {
@@ -212,7 +381,12 @@ final class EnrichmentService {
 
         var vibeError: String?
 
-        if keys.gemini != nil {
+        if keys.gemini == nil {
+            // Skipping silently made a missing key look like a model with
+            // nothing to say. The entries are still fine without tags, so this
+            // is reported rather than treated as a failure.
+            vibeError = ServiceError.missingKey("Gemini").errorDescription
+        } else {
             let needsVibes = requests.filter { request in
                 guard let outcome = outcomes[request.id] else { return false }
                 return outcome.metadata != nil && (outcome.vibes?.isEmpty ?? true)
@@ -221,8 +395,8 @@ final class EnrichmentService {
             var isFirstCall = custom.isEmpty
 
             for group in Dictionary(grouping: needsVibes, by: \.shelfKind) {
-                for chunk in group.value.chunked(into: 20) {
-                    if !isFirstCall { try? await Task.sleep(for: .seconds(2.5)) }
+                for chunk in group.value.chunked(into: Self.vibeChunkSize) {
+                    if !isFirstCall { try? await Task.sleep(for: .seconds(Self.vibeCallSpacing)) }
                     isFirstCall = false
 
                     // Send the resolved title so the model tags the same work
@@ -281,12 +455,19 @@ final class EnrichmentService {
                 apiKey: tmdbKey
             )
 
-            // Upgrade TMDB's community score to the real IMDb rating when the
-            // user has supplied an OMDb key.
-            if let omdbKey, let tmdbID = result.externalID {
-                if let imdbID = try? await TMDBService.shared.imdbID(
-                    for: tmdbID, kind: request.shelfKind, apiKey: tmdbKey
-                ),
+            // Runtime, cast, and the IMDb id arrive together in one follow-up
+            // request. A failure there shouldn't cost the whole lookup — the
+            // rest of the entry is already good.
+            if let tmdbID = result.externalID,
+               let supplement = try? await TMDBService.shared.supplement(
+                for: tmdbID, kind: request.shelfKind, apiKey: tmdbKey
+               ) {
+                result.runtimeMinutes = supplement.runtimeMinutes
+                if !supplement.cast.isEmpty { result.people = supplement.cast }
+
+                // Upgrade TMDB's community score to the real IMDb rating when
+                // the user has supplied an OMDb key.
+                if let omdbKey, let imdbID = supplement.imdbID,
                    let imdbRating = try? await OMDbService.shared.rating(
                     forIMDbID: imdbID, apiKey: omdbKey
                    ) {
@@ -297,15 +478,6 @@ final class EnrichmentService {
                     result.rating = imdbRating
                     result.ratingSource = "IMDb"
                 }
-            }
-
-            // Cast is a separate TMDB call, and a failure there shouldn't cost
-            // the whole lookup — the rest of the entry is already good.
-            if let tmdbID = result.externalID,
-               let cast = try? await TMDBService.shared.cast(
-                for: tmdbID, kind: request.shelfKind, apiKey: tmdbKey
-               ) {
-                result.people = cast
             }
 
             return result
@@ -349,6 +521,7 @@ final class EnrichmentService {
                 item.ratingSource = metadata.ratingSource
                 item.secondaryRating = metadata.secondaryRating
                 item.secondaryRatingSource = metadata.secondaryRatingSource
+                item.runtimeMinutes = metadata.runtimeMinutes
                 item.posterPath = metadata.posterPath
                 item.externalID = metadata.externalID
                 item.externalSource = metadata.externalSource
