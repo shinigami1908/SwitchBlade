@@ -7,6 +7,11 @@ struct AIVibeResult: Codable, Sendable {
     let vibes: [String]
 }
 
+struct AISeriesResult: Codable, Sendable {
+    let title: String
+    let year: Int?
+}
+
 struct AIEntryResult: Codable, Sendable {
     let title: String
     let year: Int?
@@ -131,6 +136,52 @@ struct GeminiService: Sendable {
         ]
 
         let wrapper = try await generate(prompt: prompt, schema: schema, as: VibeEnvelope.self)
+        return wrapper.results
+    }
+
+    // MARK: - Series expansion
+
+    /// Resolves a loose description of a set into concrete titles.
+    ///
+    /// The fallback for what TMDB's collections can't express. "Old Akshay
+    /// Kumar comedies" isn't a collection, it's a category, and only a model
+    /// will turn it into a list — but it costs a request from a very small
+    /// daily allowance, so nothing calls this without the user asking.
+    func seriesTitles(for request: String, context: String) async throws -> [AISeriesResult] {
+        let prompt = """
+        The user wants to add a set of \(context)s to a watchlist and has \
+        described it as: "\(request)".
+
+        List the specific titles they mean, in release order, with the release \
+        year of each. Where the description points at one particular version of \
+        a much-remade property — "old Spider-Man", "the Nolan Batman films" — \
+        list only that version's titles.
+
+        List only titles that actually exist. If the description is too vague \
+        to resolve to specific works, return an empty list rather than guessing.
+        Return at most 12.
+        """
+
+        let schema: [String: Any] = [
+            "type": "OBJECT",
+            "properties": [
+                "results": [
+                    "type": "ARRAY",
+                    "items": [
+                        "type": "OBJECT",
+                        "properties": [
+                            "title": ["type": "STRING"],
+                            "year": ["type": "INTEGER", "nullable": true]
+                        ],
+                        "required": ["title"],
+                        "propertyOrdering": ["title", "year"]
+                    ]
+                ]
+            ],
+            "required": ["results"]
+        ]
+
+        let wrapper = try await generate(prompt: prompt, schema: schema, as: SeriesEnvelope.self)
         return wrapper.results
     }
 
@@ -261,6 +312,10 @@ struct GeminiService: Sendable {
 
     private struct VibeEnvelope: Decodable, Sendable {
         let results: [AIVibeResult]
+    }
+
+    private struct SeriesEnvelope: Decodable, Sendable {
+        let results: [AISeriesResult]
     }
 
     private struct EntryEnvelope: Decodable, Sendable {

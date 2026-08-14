@@ -9,12 +9,12 @@ struct ShelfDetailView: View {
     @State private var searchText = ""
     @State private var sort: SortOption = .recentlyAdded
     @State private var activeGenres: Set<String> = []
-    @State private var activeVibes: Set<String> = []
     @State private var activeRuntimes: Set<String> = []
     @State private var showingFilters = false
     @State private var showingAdd = false
     @State private var showingImport = false
     @State private var showingEditor = false
+    @State private var showingSeries = false
     @State private var newItemName = ""
     @State private var recentlyRemoved: RemovedItem?
     @State private var undoDismissTask: Task<Void, Never>?
@@ -63,10 +63,6 @@ struct ShelfDetailView: View {
             items = items.filter { !activeGenres.isDisjoint(with: $0.genreList) }
         }
 
-        if !activeVibes.isEmpty {
-            items = items.filter { !activeVibes.isDisjoint(with: Set($0.vibesList)) }
-        }
-
         if !activeRuntimes.isEmpty {
             let bands = availableRuntimeBands.filter { activeRuntimes.contains($0.label) }
             items = items.filter { item in
@@ -94,10 +90,6 @@ struct ShelfDetailView: View {
         Set(shelf.items.flatMap(\.genreList)).sorted()
     }
 
-    private var availableVibes: [String] {
-        Set(shelf.items.flatMap(\.vibesList)).sorted()
-    }
-
     /// Only bands that some entry actually falls into, so the sheet can't offer
     /// a length that returns nothing.
     private var availableRuntimeBands: [RuntimeBand] {
@@ -109,7 +101,7 @@ struct ShelfDetailView: View {
     }
 
     private var activeFilterCount: Int {
-        activeGenres.count + activeVibes.count + activeRuntimes.count
+        activeGenres.count + activeRuntimes.count
     }
 
     private var failedItems: [ShelfItem] {
@@ -246,7 +238,7 @@ struct ShelfDetailView: View {
                           : "line.3.horizontal.decrease.circle")
                 }
                 .tint(.appAccent)
-                .disabled(availableGenres.isEmpty && availableVibes.isEmpty)
+                .disabled(availableGenres.isEmpty && availableRuntimeBands.isEmpty)
             }
 
             ToolbarItem(placement: .topBarTrailing) {
@@ -288,10 +280,8 @@ struct ShelfDetailView: View {
         .sheet(isPresented: $showingFilters) {
             FilterSheet(
                 genres: availableGenres,
-                vibes: availableVibes,
                 runtimeBands: availableRuntimeBands,
                 selectedGenres: $activeGenres,
-                selectedVibes: $activeVibes,
                 selectedRuntimes: $activeRuntimes
             )
         }
@@ -340,16 +330,12 @@ struct ShelfDetailView: View {
                 ForEach(activeGenres.sorted(), id: \.self) { genre in
                     RemovableChip(text: genre) { activeGenres.remove(genre) }
                 }
-                ForEach(activeVibes.sorted(), id: \.self) { vibe in
-                    RemovableChip(text: vibe) { activeVibes.remove(vibe) }
-                }
                 ForEach(activeRuntimes.sorted(), id: \.self) { runtime in
                     RemovableChip(text: runtime) { activeRuntimes.remove(runtime) }
                 }
 
                 Button("Clear all") {
                     activeGenres.removeAll()
-                    activeVibes.removeAll()
                     activeRuntimes.removeAll()
                 }
                 .font(.caption.weight(.medium))
@@ -499,7 +485,7 @@ struct ShelfDetailView: View {
                 actionTitle: "Clear filters"
             ) {
                 activeGenres.removeAll()
-                activeVibes.removeAll()
+                activeRuntimes.removeAll()
             }
         } else {
             EmptyStateView(
@@ -526,6 +512,34 @@ struct ShelfDetailView: View {
                     Text("A year in brackets sharpens the match — “Dune (2021)”.")
                 }
 
+                // Only ever an offer. Typing a single title never triggers this,
+                // and even when it appears, "Add" still adds exactly what was
+                // typed — expanding is a separate, deliberate tap.
+                if SeriesRequest.looksLikeSeries(newItemName) {
+                    Section {
+                        Button {
+                            showingSeries = true
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "square.stack.3d.up")
+                                    .foregroundStyle(Color.appAccent)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Looks like a series")
+                                        .font(.subheadline.weight(.medium))
+                                        .foregroundStyle(.primary)
+                                    Text("Find the films and add them together")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer(minLength: 0)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(.tertiary)
+                            }
+                        }
+                    }
+                }
+
                 Section {
                     Label(sourceDescription, systemImage: "sparkles")
                         .font(.footnote)
@@ -546,8 +560,19 @@ struct ShelfDetailView: View {
                         .disabled(newItemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
+            // Presented from inside the add sheet so it stacks on top of it;
+            // attaching it to the parent instead would fight the sheet already
+            // on screen and never appear.
+            .sheet(isPresented: $showingSeries) {
+                SeriesExpansionView(shelf: shelf, query: newItemName) {
+                    // Only on a real add — backing out of the series sheet
+                    // returns you to the field with your text intact.
+                    newItemName = ""
+                    showingAdd = false
+                }
+            }
         }
-        .presentationDetents([.medium])
+        .presentationDetents([.medium, .large])
     }
 
     private var sourceDescription: String {

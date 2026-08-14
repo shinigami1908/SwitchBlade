@@ -240,6 +240,118 @@ struct TMDBService: Sendable {
         )
     }
 
+    // MARK: - Collections
+
+    /// A film series as TMDB files it — "Spider-Man Collection" (Raimi) is a
+    /// different collection from "The Amazing Spider-Man Collection" and from
+    /// the MCU one, which is exactly the distinction a phrase like "old spider
+    /// man" is trying to make.
+    ///
+    /// Collections are a film-only concept on TMDB; television has no
+    /// equivalent.
+    struct MovieCollection: Identifiable, Sendable {
+        let id: Int
+        let name: String
+        var parts: [Part]
+
+        struct Part: Identifiable, Sendable {
+            let id: Int
+            let title: String
+            let year: Int?
+        }
+
+        /// "2002–2007", or a single year, for telling near-identical
+        /// collections apart at a glance.
+        var yearRange: String? {
+            let years = parts.compactMap(\.year).sorted()
+            guard let first = years.first, let last = years.last else { return nil }
+            return first == last ? "\(first)" : "\(first)–\(last)"
+        }
+    }
+
+    private struct CollectionSearchResponse: Decodable {
+        let results: [Item]
+        struct Item: Decodable {
+            let id: Int
+            let name: String
+        }
+    }
+
+    private struct CollectionDetails: Decodable {
+        let parts: [Part]?
+        struct Part: Decodable {
+            let id: Int
+            let title: String?
+            let releaseDate: String?
+
+            enum CodingKeys: String, CodingKey {
+                case id, title
+                case releaseDate = "release_date"
+            }
+        }
+    }
+
+    /// Collections matching a phrase, each with its films already loaded.
+    ///
+    /// The parts are fetched up front — a name alone can't distinguish three
+    /// Spider-Man collections, but a year range can, and TMDB requests cost
+    /// nothing against any budget.
+    func collections(
+        matching query: String,
+        apiKey: String,
+        limit: Int = 4
+    ) async throws -> [MovieCollection] {
+        guard let url = URL.build("\(base)/search/collection", [
+            "api_key": apiKey,
+            "query": query,
+            "language": "en-US",
+            "page": "1"
+        ]) else { throw ServiceError.badURL }
+
+        let found = try await HTTPClient.shared.get(url, as: CollectionSearchResponse.self)
+        let shortlist = Array(found.results.prefix(limit))
+        guard !shortlist.isEmpty else { return [] }
+
+        return await withTaskGroup(of: MovieCollection?.self) { group in
+            for entry in shortlist {
+                group.addTask {
+                    guard let parts = try? await Self.shared.collectionParts(
+                        id: entry.id, apiKey: apiKey
+                    ), !parts.isEmpty else { return nil }
+                    return MovieCollection(id: entry.id, name: entry.name, parts: parts)
+                }
+            }
+
+            var collected: [MovieCollection] = []
+            for await result in group {
+                if let result { collected.append(result) }
+            }
+            // The task group finishes in whatever order the network does, so
+            // restore the relevance ordering TMDB gave us.
+            let ranking = shortlist.map(\.id)
+            return collected.sorted {
+                (ranking.firstIndex(of: $0.id) ?? .max) < (ranking.firstIndex(of: $1.id) ?? .max)
+            }
+        }
+    }
+
+    private func collectionParts(id: Int, apiKey: String) async throws -> [MovieCollection.Part] {
+        guard let url = URL.build("\(base)/collection/\(id)", [
+            "api_key": apiKey,
+            "language": "en-US"
+        ]) else { throw ServiceError.badURL }
+
+        let details = try await HTTPClient.shared.get(url, as: CollectionDetails.self)
+
+        return (details.parts ?? []).compactMap { part in
+            guard let title = part.title, !title.isEmpty else { return nil }
+            let year = part.releaseDate.flatMap { Int($0.prefix(4)) }
+            return MovieCollection.Part(id: part.id, title: title, year: year)
+        }
+        // Release order is how anyone thinks about a series.
+        .sorted { ($0.year ?? .max) < ($1.year ?? .max) }
+    }
+
     /// Prefers an exact title match, then a year match, then popularity — TMDB's
     /// default ordering alone tends to surface remakes and documentaries.
     private func pickBest(

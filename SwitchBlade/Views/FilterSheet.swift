@@ -32,31 +32,34 @@ struct RuntimeBand: Identifiable, Hashable {
     }
 }
 
-/// Genre, vibe, and length filters for a shelf.
+/// Genre and length filters for a shelf.
 ///
 /// Every list is built from what is actually on the shelf, so no option here
 /// can return nothing.
+///
+/// Vibes are deliberately not filterable. They're free-form and there ends up
+/// being nearly one per title, so the list was long enough to be unusable as a
+/// filter while adding little a genre filter doesn't already do. They still
+/// appear on the entries themselves.
 struct FilterSheet: View {
     let genres: [String]
-    let vibes: [String]
     let runtimeBands: [RuntimeBand]
 
     @Binding var selectedGenres: Set<String>
-    @Binding var selectedVibes: Set<String>
     @Binding var selectedRuntimes: Set<String>
 
     @Environment(\.dismiss) private var dismiss
 
     private var total: Int {
-        selectedGenres.count + selectedVibes.count + selectedRuntimes.count
+        selectedGenres.count + selectedRuntimes.count
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    if genres.isEmpty && vibes.isEmpty && runtimeBands.isEmpty {
-                        Text("Nothing to filter by yet. Genres and vibes appear once entries have filled in.")
+                    if genres.isEmpty && runtimeBands.isEmpty {
+                        Text("Nothing to filter by yet. Genres and lengths appear once entries have filled in.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .padding(.top, 20)
@@ -67,14 +70,6 @@ struct FilterSheet: View {
                             title: "Genre",
                             options: genres,
                             selection: $selectedGenres
-                        )
-                    }
-
-                    if !vibes.isEmpty {
-                        group(
-                            title: "Vibe",
-                            options: vibes,
-                            selection: $selectedVibes
                         )
                     }
 
@@ -96,7 +91,6 @@ struct FilterSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Clear") {
                         selectedGenres.removeAll()
-                        selectedVibes.removeAll()
                         selectedRuntimes.removeAll()
                     }
                     .disabled(total == 0)
