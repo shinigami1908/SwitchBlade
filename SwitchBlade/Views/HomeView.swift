@@ -182,15 +182,22 @@ struct HomeView: View {
         }
     }
 
-    /// Today's two entries, ordered so the same dictionary always appears first.
+    /// The latest entry from each dictionary, ordered so the same one always
+    /// appears first.
+    ///
+    /// Newest-per-source rather than filtered by date. Both feeds publish on US
+    /// Eastern time, so for most of an Indian morning the newest word in
+    /// existence is still yesterday's by the local calendar — matching on the
+    /// local day showed nothing, or fell back to an arbitrary pair.
     private var todaysWords: [WordOfTheDayItem] {
-        let today = Date.now.dayKey
-        let matching = words.filter { $0.dayKey == today }
-        // Before the first fetch of a new day, show the most recent pair rather
-        // than an empty row.
-        let pool = matching.isEmpty ? Array(words.prefix(WordSource.allCases.count)) : matching
+        // `words` is already sorted newest first, so the first hit per source
+        // is that dictionary's latest.
+        var latest: [String: WordOfTheDayItem] = [:]
+        for word in words where latest[word.source] == nil {
+            latest[word.source] = word
+        }
 
-        return pool.sorted { lhs, rhs in
+        return Array(latest.values).sorted { lhs, rhs in
             let order = WordSource.allCases.map(\.rawValue)
             let l = order.firstIndex(of: lhs.source) ?? order.count
             let r = order.firstIndex(of: rhs.source) ?? order.count
@@ -225,16 +232,17 @@ struct HomeView: View {
                     Button {
                         Task { await feed.loadArticles(context: modelContext, replacing: true) }
                     } label: {
-                        if feed.isLoadingArticles {
-                            ProgressView().controlSize(.small)
-                        } else {
-                            Label("New set", systemImage: "arrow.triangle.2.circlepath")
-                                .font(.caption.weight(.medium))
-                                .labelStyle(.titleAndIcon)
-                        }
+                        // The label stays put while loading. Swapping it for a
+                        // spinner made the control jump and duplicated the
+                        // progress the section itself already shows; dimming
+                        // and locking says "working" without either.
+                        Label("New set", systemImage: "arrow.triangle.2.circlepath")
+                            .font(.caption.weight(.medium))
+                            .labelStyle(.titleAndIcon)
                     }
                     .buttonStyle(.plain)
                     .foregroundStyle(Color.appAccent)
+                    .opacity(feed.isLoadingArticles ? 0.4 : 1)
                     .disabled(feed.isLoadingArticles)
                 }
             }

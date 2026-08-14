@@ -24,6 +24,31 @@ final class FeedService {
     /// Guards against overlapping refreshes.
     private var articleFetchInProgress = false
 
+    /// How long to wait before asking the feeds again for a word that hasn't
+    /// been published yet. Half an hour keeps the roll-over prompt without
+    /// making every visit to Home a network call.
+    private static let wordRecheckInterval: TimeInterval = 30 * 60
+    private var lastWordCheck: Date?
+
+    /// Articles shown recently, so "New set" brings genuinely new reading.
+    ///
+    /// Kept in preferences rather than the store precisely because a refresh
+    /// deletes the articles themselves — which is why the same pieces kept
+    /// reappearing a set or two later. Capped, so history can never starve the
+    /// pool it's filtering.
+    private static let recentKeysLimit = 400
+    private static let recentKeysDefault = "feed.recent_article_keys"
+
+    private var recentKeys: [String] {
+        get { UserDefaults.standard.stringArray(forKey: Self.recentKeysDefault) ?? [] }
+        set {
+            UserDefaults.standard.set(
+                Array(newValue.suffix(Self.recentKeysLimit)),
+                forKey: Self.recentKeysDefault
+            )
+        }
+    }
+
     private init() {}
 
     // MARK: - Word of the day
@@ -34,7 +59,12 @@ final class FeedService {
     func ensureWordsForToday(context: ModelContext) async {
         guard !isLoadingWords else { return }
 
-        let today = Date.now.dayKey
+        // Keyed to the publishers' day, not the reader's. Both feeds roll over
+        // at ~01:00 US Eastern — mid-morning in India — so a fetch made after
+        // local midnight legitimately returns "yesterday's" word. Keying it as
+        // today's used to pin it there until the next local midnight, long
+        // after the real one had been published.
+        let today = Date.now.publisherDayKey
         let descriptor = FetchDescriptor<WordOfTheDayItem>(
             predicate: #Predicate { $0.dayKey == today }
         )
@@ -43,6 +73,15 @@ final class FeedService {
 
         let missing = WordSource.allCases.filter { !haveSources.contains($0.rawValue) }
         guard !missing.isEmpty else { return }
+
+        // The word may simply not be out yet, so this runs repeatedly through
+        // the day rather than once. Throttled so returning to Home isn't a
+        // request each time.
+        let now = Date.now
+        if let last = lastWordCheck, now.timeIntervalSince(last) < Self.wordRecheckInterval {
+            return
+        }
+        lastWordCheck = now
 
         isLoadingWords = true
         defer { isLoadingWords = false }
@@ -171,9 +210,9 @@ final class FeedService {
             return
         }
 
-        // Exclude saved articles as well as current ones, so a piece you've
-        // already kept doesn't come back around.
-        let usedKeys = Set(stored.map(\.lookupKey))
+        // Exclude saved and current articles, plus everything shown in recent
+        // sets — otherwise a refresh is free to hand back what it just deleted.
+        let usedKeys = Set(stored.map(\.lookupKey)).union(recentKeys)
 
         do {
             let articles = try await WikipediaService.shared.fetchArticles(
@@ -219,6 +258,11 @@ final class FeedService {
             }
 
             try? context.save()
+
+            recentKeys += articles.map {
+                $0.title.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+
             articleError = nil
         } catch {
             articleError = (error as? ServiceError)?.errorDescription ?? error.localizedDescription

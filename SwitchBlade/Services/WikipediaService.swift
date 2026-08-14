@@ -57,13 +57,73 @@ struct WikipediaService: Sendable {
         Topic(label: "Economics", category: "Economics_effects"),
         Topic(label: "Economics", category: "Game_theory"),
         Topic(label: "Astronomy", category: "Astronomical_objects"),
-        Topic(label: "Chemistry", category: "Chemical_processes")
+        Topic(label: "Chemistry", category: "Chemical_processes"),
+
+        // Every category below was checked against the live API for page count
+        // before being added — a category that's mostly sub-categories returns
+        // almost no articles and silently wastes a request. Each of these has
+        // 45+ pages. They exist to widen the *labels* on offer: the feed used
+        // to draw on twelve fields, which is why refreshes kept circling back
+        // to maths and mythology.
+        Topic(label: "Art", category: "Art_movements"),
+        Topic(label: "Art", category: "Painting_techniques"),
+        Topic(label: "Design", category: "Typography"),
+        Topic(label: "Architecture", category: "Architectural_styles"),
+        Topic(label: "Music", category: "Music_theory"),
+        Topic(label: "Music", category: "Musical_instruments"),
+        Topic(label: "Computing", category: "Cryptography"),
+        Topic(label: "Computing", category: "Algorithms"),
+        Topic(label: "Food", category: "Cooking_techniques"),
+        Topic(label: "Linguistics", category: "Constructed_languages"),
+        Topic(label: "Mathematics", category: "Fractals"),
+        Topic(label: "Military", category: "Military_tactics"),
+        Topic(label: "Biology", category: "Symbiosis"),
+        Topic(label: "Biology", category: "Extremophiles"),
+        Topic(label: "History", category: "Shipwrecks"),
+        Topic(label: "History", category: "Trade_routes"),
+        Topic(label: "History", category: "Ancient_Egypt"),
+        Topic(label: "Games", category: "Board_games"),
+        Topic(label: "Philosophy", category: "Paradoxes"),
+        Topic(label: "Psychology", category: "Emotions")
     ]
 
     /// Quality thresholds. A page needs both a decent readership and a
     /// substantial intro to make the feed.
     private let minimumMonthlyViews = 12_000
     private let minimumExtractLength = 500
+
+    /// Topics fetched at once. Deliberately modest: Wikipedia throttles bursts,
+    /// and a 429 costs more time than the parallelism saves.
+    private static let topicConcurrency = 4
+
+    /// One topic's worth of usable articles: category listing, then details,
+    /// then the quality filter. Returns empty rather than throwing so one dead
+    /// category can't fail a whole batch.
+    private func candidates(
+        for topic: Topic,
+        excluding seen: Set<String>
+    ) async -> [KnowledgeArticle] {
+        guard let members = try? await categoryMembers(topic.category) else { return [] }
+
+        let sample = members
+            .filter { !seen.contains($0.lowercased()) }
+            .shuffled()
+            .prefix(20)
+
+        guard !sample.isEmpty,
+              let details = try? await pageDetails(titles: Array(sample))
+        else { return [] }
+
+        // Shuffled rather than ranked by readership. Sorting by views and
+        // taking from the top returned the same handful of famous pages from a
+        // category every single time — view counts barely move, so the order
+        // was effectively fixed. The threshold already guarantees these are all
+        // well-read; among those, random is what makes a refresh feel new.
+        return details
+            .filter { $0.monthlyViews >= minimumMonthlyViews }
+            .filter { $0.extract.count >= minimumExtractLength }
+            .shuffled()
+    }
 
     // MARK: - Public entry point
 
@@ -97,38 +157,52 @@ struct WikipediaService: Sendable {
                 remainingTopics = Self.topics.shuffled()
             }
 
-            let topic = remainingTopics.removeFirst()
-
-            // Several categories share a label (Greek/Norse/Egyptian all map to
-            // "Mythology"), so the cap is counted per label, not per category.
-            if round == 1, takenPerLabel[topic.label, default: 0] >= perTopicCap {
-                continue
+            // Topics are fetched a few at a time rather than one after another.
+            // Each one costs two round trips, and filling a set needs a dozen
+            // topics, so serially this was twenty-odd requests end to end —
+            // several seconds of staring at a spinner. The batch is kept small
+            // on purpose: Wikipedia throttles bursts, and being rate-limited
+            // is slower than being patient.
+            var batch: [Topic] = []
+            while batch.count < Self.topicConcurrency, !remainingTopics.isEmpty {
+                let topic = remainingTopics.removeFirst()
+                // Several categories share a label (Greek/Norse/Egyptian all
+                // map to "Mythology"), so the cap is per label, not category.
+                if round == 1, takenPerLabel[topic.label, default: 0] >= perTopicCap {
+                    continue
+                }
+                batch.append(topic)
             }
 
-            guard let candidates = try? await categoryMembers(topic.category) else { continue }
+            guard !batch.isEmpty else { continue }
 
-            let sample = candidates
-                .filter { !seen.contains($0.lowercased()) }
-                .shuffled()
-                .prefix(20)
+            let harvested = await withTaskGroup(
+                of: (Topic, [KnowledgeArticle]).self
+            ) { group in
+                for topic in batch {
+                    let excluded = seen
+                    group.addTask {
+                        (topic, await Self.shared.candidates(for: topic, excluding: excluded))
+                    }
+                }
 
-            guard !sample.isEmpty else { continue }
+                var results: [(Topic, [KnowledgeArticle])] = []
+                for await result in group { results.append(result) }
+                return results
+            }
 
-            guard let details = try? await pageDetails(titles: Array(sample)) else { continue }
+            // Caps and de-duplication are applied here, on the main path, so
+            // concurrent fetches can't race each other's bookkeeping.
+            for (topic, qualifying) in harvested {
+                for var article in qualifying {
+                    guard collected.count < count else { break }
+                    if round == 1, takenPerLabel[topic.label, default: 0] >= perTopicCap { break }
+                    guard seen.insert(article.title.lowercased()).inserted else { continue }
 
-            let qualifying = details
-                .filter { $0.monthlyViews >= minimumMonthlyViews }
-                .filter { $0.extract.count >= minimumExtractLength }
-                .sorted { $0.monthlyViews > $1.monthlyViews }
-
-            for var article in qualifying {
-                guard collected.count < count else { break }
-                if round == 1, takenPerLabel[topic.label, default: 0] >= perTopicCap { break }
-                guard seen.insert(article.title.lowercased()).inserted else { continue }
-
-                article.category = topic.label
-                collected.append(article)
-                takenPerLabel[topic.label, default: 0] += 1
+                    article.category = topic.label
+                    collected.append(article)
+                    takenPerLabel[topic.label, default: 0] += 1
+                }
             }
         }
 

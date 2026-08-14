@@ -352,6 +352,26 @@ extension DateFormatter {
     }()
 }
 
+extension DateFormatter {
+    /// Day key in the dictionaries' own timezone.
+    ///
+    /// Merriam-Webster and Wordsmith both publish at ~01:00 US Eastern, which
+    /// is mid-morning in India. Asking "do we have today's word?" in the
+    /// reader's calendar means asking for a word that doesn't exist yet, and
+    /// then pinning yesterday's for the rest of the day once it's stored.
+    static let publisherDayKey: DateFormatter = {
+        let f = DateFormatter()
+        f.calendar = Calendar(identifier: .gregorian)
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "America/New_York") ?? .current
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+}
+
 extension Date {
     var dayKey: String { DateFormatter.dayKey.string(from: self) }
+
+    /// The current day where the word feeds are published.
+    var publisherDayKey: String { DateFormatter.publisherDayKey.string(from: self) }
 }
