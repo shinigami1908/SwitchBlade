@@ -104,6 +104,30 @@ struct ShelfDetailView: View {
         activeGenres.count + activeRuntimes.count
     }
 
+    /// The entry already on this shelf that the typed title would duplicate.
+    ///
+    /// Year-aware on purpose. Comparing titles alone would either miss "Dune
+    /// (2021)" against a stored "Dune" — the matcher doesn't strip a bracketed
+    /// year, so that only scores 0.90 — or, if the bar were lowered to catch
+    /// it, would flag "Spider-Man 2" as a duplicate of "Spider-Man", which
+    /// scores the same 0.90 and is a different film. Stripping the year and
+    /// then comparing years separately gets both cases right.
+    private var duplicateOfTyped: ShelfItem? {
+        let (query, typedYear) = TitleParser.split(newItemName)
+        guard query.count >= 2 else { return nil }
+
+        return shelf.items.first { item in
+            guard TitleMatcher.score(candidate: item.name, query: query) >= 0.99 else {
+                return false
+            }
+            // Two films can share a title — a remake is not a duplicate — so a
+            // year on both sides has to agree. A year on neither, or on only
+            // one, is treated as the same work.
+            guard let typedYear, let storedYear = item.year else { return true }
+            return typedYear == storedYear
+        }
+    }
+
     private var failedItems: [ShelfItem] {
         shelf.items.filter { $0.enrichment == .failed }
     }
@@ -518,6 +542,25 @@ struct ShelfDetailView: View {
                     Text("A year in brackets sharpens the match — “Dune (2021)”.")
                 }
 
+                if let existing = duplicateOfTyped {
+                    Section {
+                        HStack(spacing: 10) {
+                            Image(systemName: "exclamationmark.circle.fill")
+                                .foregroundStyle(Color.appWarning)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Already on \(shelf.name)")
+                                    .font(.subheadline.weight(.medium))
+                                Text([existing.name, existing.year.map(String.init)]
+                                    .compactMap { $0 }
+                                    .joined(separator: " · "))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+
                 // Only ever an offer. Typing a single title never triggers this,
                 // and even when it appears, "Add" still adds exactly what was
                 // typed — expanding is a separate, deliberate tap.
@@ -563,7 +606,10 @@ struct ShelfDetailView: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add", action: addItem)
-                        .disabled(newItemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        .disabled(
+                            newItemName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                || duplicateOfTyped != nil
+                        )
                 }
             }
             // Presented from inside the add sheet so it stacks on top of it;
@@ -595,6 +641,9 @@ struct ShelfDetailView: View {
     private func addItem() {
         let name = newItemName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty else { return }
+        // Also checked here, not just on the button: the keyboard's return key
+        // submits too, and it doesn't consult the button's disabled state.
+        guard duplicateOfTyped == nil else { return }
 
         let item = ShelfItem(name: name)
         item.shelf = shelf
