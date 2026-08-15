@@ -241,14 +241,20 @@ struct ShelfDetailView: View {
                 .disabled(availableGenres.isEmpty && availableRuntimeBands.isEmpty)
             }
 
+            // Adding is the thing you come to a shelf to do, so it's a button
+            // rather than the first line of a menu.
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showingAdd = true
+                } label: {
+                    Image(systemName: "plus")
+                }
+                .tint(.appAccent)
+                .accessibilityLabel("Add to \(shelf.name)")
+            }
+
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Button {
-                        showingAdd = true
-                    } label: {
-                        Label("Add Entry", systemImage: "plus")
-                    }
-
                     Button {
                         showingImport = true
                     } label: {
