@@ -61,40 +61,66 @@ struct RatingBadge: View {
 
 /// Async artwork with a typed placeholder, so rows keep a fixed height whether
 /// or not an image exists.
+/// Decoded posters, held for the life of the launch.
+///
+/// `AsyncImage` restarts its load every time its view is re-created, passing
+/// back through the empty phase first. Inside a `List` that meant any unrelated
+/// state change on the shelf — opening a dialog, editing a filter — made every
+/// poster blink to a grey spinner and back. The URL cache didn't help, because
+/// the flash comes from re-decoding, not re-downloading.
+private enum PosterCache {
+    static let images = NSCache<NSURL, UIImage>()
+}
+
 struct PosterThumbnail: View {
     let url: URL?
     let symbol: String
     var width: CGFloat = 54
     var height: CGFloat = 78
 
+    @State private var loaded: UIImage?
+
     var body: some View {
         Group {
-            if let url {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    case .failure:
-                        placeholder
-                    case .empty:
-                        ZStack {
-                            Color.appSurfaceElevated
-                            ProgressView().controlSize(.small)
-                        }
-                    @unknown default:
-                        placeholder
-                    }
+            if let loaded {
+                Image(uiImage: loaded).resizable().scaledToFill()
+            } else if url != nil {
+                ZStack {
+                    Color.appSurfaceElevated
+                    ProgressView().controlSize(.small)
                 }
             } else {
                 placeholder
             }
         }
+        // Keyed on the URL so a refreshed poster replaces the old one, and so
+        // a recycled row doesn't keep showing the previous entry's artwork.
+        .task(id: url) { await load() }
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .strokeBorder(Color.appBorder, lineWidth: Metrics.hairline)
         )
+    }
+
+    private func load() async {
+        guard let url else {
+            loaded = nil
+            return
+        }
+
+        if let cached = PosterCache.images.object(forKey: url as NSURL) {
+            loaded = cached
+            return
+        }
+
+        guard let data = try? await HTTPClient.shared.data(for: URLRequest(url: url)),
+              let image = UIImage(data: data)
+        else { return }
+
+        PosterCache.images.setObject(image, forKey: url as NSURL)
+        loaded = image
     }
 
     private var placeholder: some View {

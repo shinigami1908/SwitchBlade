@@ -22,9 +22,6 @@ struct ShelfDetailView: View {
     /// Held between tapping Delete and confirming it. Delete is the only action
     /// without an undo, so it asks first.
     @State private var pendingDeletion: ShelfItem?
-    /// The same for Done. It already keeps a five-second undo, so this is a
-    /// second guard rather than the only one.
-    @State private var pendingDone: ShelfItem?
     @State private var undoDismissTask: Task<Void, Never>?
 
     private let enrichment = EnrichmentService.shared
@@ -171,11 +168,6 @@ struct ShelfDetailView: View {
         }
     }
 
-    /// "Mark as played" reads wrong for a film, "watched" wrong for a game.
-    private var doneVerb: String {
-        shelf.kind == .game ? "Played" : "Watched"
-    }
-
     private var failedItems: [ShelfItem] {
         shelf.items.filter { $0.enrichment == .failed }
     }
@@ -285,7 +277,7 @@ struct ShelfDetailView: View {
                             // the shelf is the backlog, so a finished entry
                             // has nowhere to sit.
                             Button {
-                                pendingDone = item
+                                markDone(item)
                             } label: {
                                 Label("Done", systemImage: "checkmark")
                             }
@@ -407,22 +399,6 @@ struct ShelfDetailView: View {
             Button("Cancel", role: .cancel) { pendingDeletion = nil }
         } message: {
             Text("This can't be undone. To take something off the shelf because you've watched it, use Done instead.")
-        }
-        .confirmationDialog(
-            "Finished “\(pendingDone?.name ?? "")”?",
-            isPresented: Binding(
-                get: { pendingDone != nil },
-                set: { if !$0 { pendingDone = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button(doneVerb) {
-                if let item = pendingDone { markDone(item) }
-                pendingDone = nil
-            }
-            Button("Cancel", role: .cancel) { pendingDone = nil }
-        } message: {
-            Text("This takes it off \(shelf.name). You'll have a few seconds to undo.")
         }
         .onDisappear { undoDismissTask?.cancel() }
     }
