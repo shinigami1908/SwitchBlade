@@ -32,7 +32,28 @@ struct RuntimeBand: Identifiable, Hashable {
     }
 }
 
-/// Genre and length filters for a shelf.
+/// A score band offered in the filter.
+///
+/// Half-open ranges rather than closed ones, so a title scoring exactly 8.0
+/// lands in "8 and up" and not also in "7 – 8". The same bands serve every
+/// shelf: unlike length, a score means the same thing whether it came from
+/// IMDb, Metacritic or IGDB.
+struct RatingBand: Identifiable, Hashable {
+    let label: String
+    let range: Range<Double>
+
+    var id: String { label }
+
+    static let all: [RatingBand] = [
+        // Starts above zero because zero means "not rated yet", not "terrible".
+        RatingBand(label: "Under 6", range: 0.1..<6),
+        RatingBand(label: "6 – 7", range: 6..<7),
+        RatingBand(label: "7 – 8", range: 7..<8),
+        RatingBand(label: "8 and up", range: 8..<10.1)
+    ]
+}
+
+/// Genre, score, and length filters for a shelf.
 ///
 /// Every list is built from what is actually on the shelf, so no option here
 /// can return nothing.
@@ -43,23 +64,25 @@ struct RuntimeBand: Identifiable, Hashable {
 /// appear on the entries themselves.
 struct FilterSheet: View {
     let genres: [String]
+    let ratingBands: [RatingBand]
     let runtimeBands: [RuntimeBand]
 
     @Binding var selectedGenres: Set<String>
+    @Binding var selectedRatings: Set<String>
     @Binding var selectedRuntimes: Set<String>
 
     @Environment(\.dismiss) private var dismiss
 
     private var total: Int {
-        selectedGenres.count + selectedRuntimes.count
+        selectedGenres.count + selectedRatings.count + selectedRuntimes.count
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    if genres.isEmpty && runtimeBands.isEmpty {
-                        Text("Nothing to filter by yet. Genres and lengths appear once entries have filled in.")
+                    if genres.isEmpty && ratingBands.isEmpty && runtimeBands.isEmpty {
+                        Text("Nothing to filter by yet. Genres, scores and lengths appear once entries have filled in.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .padding(.top, 20)
@@ -70,6 +93,14 @@ struct FilterSheet: View {
                             title: "Genre",
                             options: genres,
                             selection: $selectedGenres
+                        )
+                    }
+
+                    if !ratingBands.isEmpty {
+                        group(
+                            title: "Rating",
+                            options: ratingBands.map(\.label),
+                            selection: $selectedRatings
                         )
                     }
 
@@ -91,6 +122,7 @@ struct FilterSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Clear") {
                         selectedGenres.removeAll()
+                        selectedRatings.removeAll()
                         selectedRuntimes.removeAll()
                     }
                     .disabled(total == 0)

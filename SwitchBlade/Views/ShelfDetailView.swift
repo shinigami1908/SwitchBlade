@@ -9,6 +9,7 @@ struct ShelfDetailView: View {
     @State private var searchText = ""
     @State private var sort: SortOption = .recentlyAdded
     @State private var activeGenres: Set<String> = []
+    @State private var activeRatings: Set<String> = []
     @State private var activeRuntimes: Set<String> = []
     @State private var showingFilters = false
     @State private var showingAdd = false
@@ -63,6 +64,15 @@ struct ShelfDetailView: View {
             items = items.filter { !activeGenres.isDisjoint(with: $0.genreList) }
         }
 
+        if !activeRatings.isEmpty {
+            let bands = RatingBand.all.filter { activeRatings.contains($0.label) }
+            items = items.filter { item in
+                // Unrated entries are excluded rather than kept: asking for
+                // "8 and up" shouldn't return things with no score at all.
+                item.rating > 0 && bands.contains { $0.range.contains(item.rating) }
+            }
+        }
+
         if !activeRuntimes.isEmpty {
             let bands = availableRuntimeBands.filter { activeRuntimes.contains($0.label) }
             items = items.filter { item in
@@ -90,6 +100,16 @@ struct ShelfDetailView: View {
         Set(shelf.items.flatMap(\.genreList)).sorted()
     }
 
+    /// Only bands some entry actually falls into, so the sheet can't offer a
+    /// score that returns nothing.
+    private var availableRatingBands: [RatingBand] {
+        let scores = shelf.items.map(\.rating).filter { $0 > 0 }
+        guard !scores.isEmpty else { return [] }
+        return RatingBand.all.filter { band in
+            scores.contains { band.range.contains($0) }
+        }
+    }
+
     /// Only bands that some entry actually falls into, so the sheet can't offer
     /// a length that returns nothing.
     private var availableRuntimeBands: [RuntimeBand] {
@@ -101,7 +121,7 @@ struct ShelfDetailView: View {
     }
 
     private var activeFilterCount: Int {
-        activeGenres.count + activeRuntimes.count
+        activeGenres.count + activeRatings.count + activeRuntimes.count
     }
 
     /// The entry already on this shelf that the typed title would duplicate.
@@ -262,7 +282,11 @@ struct ShelfDetailView: View {
                           : "line.3.horizontal.decrease.circle")
                 }
                 .tint(.appAccent)
-                .disabled(availableGenres.isEmpty && availableRuntimeBands.isEmpty)
+                .disabled(
+                    availableGenres.isEmpty
+                        && availableRatingBands.isEmpty
+                        && availableRuntimeBands.isEmpty
+                )
             }
 
             // Adding is the thing you come to a shelf to do, so it's a button
@@ -310,8 +334,10 @@ struct ShelfDetailView: View {
         .sheet(isPresented: $showingFilters) {
             FilterSheet(
                 genres: availableGenres,
+                ratingBands: availableRatingBands,
                 runtimeBands: availableRuntimeBands,
                 selectedGenres: $activeGenres,
+                selectedRatings: $activeRatings,
                 selectedRuntimes: $activeRuntimes
             )
         }
@@ -360,12 +386,16 @@ struct ShelfDetailView: View {
                 ForEach(activeGenres.sorted(), id: \.self) { genre in
                     RemovableChip(text: genre) { activeGenres.remove(genre) }
                 }
+                ForEach(activeRatings.sorted(), id: \.self) { rating in
+                    RemovableChip(text: rating) { activeRatings.remove(rating) }
+                }
                 ForEach(activeRuntimes.sorted(), id: \.self) { runtime in
                     RemovableChip(text: runtime) { activeRuntimes.remove(runtime) }
                 }
 
                 Button("Clear all") {
                     activeGenres.removeAll()
+                    activeRatings.removeAll()
                     activeRuntimes.removeAll()
                 }
                 .font(.caption.weight(.medium))
@@ -515,6 +545,7 @@ struct ShelfDetailView: View {
                 actionTitle: "Clear filters"
             ) {
                 activeGenres.removeAll()
+                activeRatings.removeAll()
                 activeRuntimes.removeAll()
             }
         } else {
