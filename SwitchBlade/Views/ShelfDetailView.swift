@@ -10,6 +10,7 @@ struct ShelfDetailView: View {
     @State private var sort: SortOption = .recentlyAdded
     @State private var activeGenres: Set<String> = []
     @State private var activeRatings: Set<String> = []
+    @State private var activeYears: Set<String> = []
     @State private var activeRuntimes: Set<String> = []
     @State private var showingFilters = false
     @State private var showingAdd = false
@@ -18,6 +19,12 @@ struct ShelfDetailView: View {
     @State private var showingSeries = false
     @State private var newItemName = ""
     @State private var recentlyRemoved: RemovedItem?
+    /// Held between tapping Delete and confirming it. Delete is the only action
+    /// without an undo, so it asks first.
+    @State private var pendingDeletion: ShelfItem?
+    /// The same for Done. It already keeps a five-second undo, so this is a
+    /// second guard rather than the only one.
+    @State private var pendingDone: ShelfItem?
     @State private var undoDismissTask: Task<Void, Never>?
 
     private let enrichment = EnrichmentService.shared
@@ -73,6 +80,15 @@ struct ShelfDetailView: View {
             }
         }
 
+        if !activeYears.isEmpty {
+            let bands = availableYearBands.filter { activeYears.contains($0.label) }
+            items = items.filter { item in
+                // Undated entries are excluded, as with scores and lengths.
+                guard let year = item.year else { return false }
+                return bands.contains { $0.range.contains(year) }
+            }
+        }
+
         if !activeRuntimes.isEmpty {
             let bands = availableRuntimeBands.filter { activeRuntimes.contains($0.label) }
             items = items.filter { item in
@@ -110,6 +126,12 @@ struct ShelfDetailView: View {
         }
     }
 
+    /// Decades present on this shelf. Already limited to what exists, since the
+    /// bands are generated from the years themselves.
+    private var availableYearBands: [YearBand] {
+        YearBand.bands(covering: shelf.items.compactMap(\.year))
+    }
+
     /// Only bands that some entry actually falls into, so the sheet can't offer
     /// a length that returns nothing.
     private var availableRuntimeBands: [RuntimeBand] {
@@ -121,7 +143,8 @@ struct ShelfDetailView: View {
     }
 
     private var activeFilterCount: Int {
-        activeGenres.count + activeRatings.count + activeRuntimes.count
+        activeGenres.count + activeRatings.count
+            + activeYears.count + activeRuntimes.count
     }
 
     /// The entry already on this shelf that the typed title would duplicate.
@@ -146,6 +169,11 @@ struct ShelfDetailView: View {
             guard let typedYear, let storedYear = item.year else { return true }
             return typedYear == storedYear
         }
+    }
+
+    /// "Mark as played" reads wrong for a film, "watched" wrong for a game.
+    private var doneVerb: String {
+        shelf.kind == .game ? "Played" : "Watched"
     }
 
     private var failedItems: [ShelfItem] {
@@ -232,30 +260,46 @@ struct ShelfDetailView: View {
                         }
                         .listRowBackground(Color.appSurface)
                         .listRowSeparatorTint(Color.appBorder)
-                        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                        // Full swipe is off here on purpose. Delete is the one
+                        // action with no undo — Done keeps a five-second
+                        // restore — so it takes a deliberate tap rather than a
+                        // flick that could happen while scrolling.
+                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                            // Explicitly red. The destructive role would
+                            // normally colour this itself, but the app-wide
+                            // accent tint overrides it inside a swipe action,
+                            // which left the one dangerous button looking
+                            // exactly like the safe ones.
+                            Button(role: .destructive) {
+                                pendingDeletion = item
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                            .tint(.appNegative)
+                        }
+                        // Done is listed first so it sits at the edge and is
+                        // what a full swipe triggers — the common action, and
+                        // the one that can be undone.
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             // Finishing something takes it off the shelf —
                             // the shelf is the backlog, so a finished entry
                             // has nowhere to sit.
                             Button {
-                                markDone(item)
+                                pendingDone = item
                             } label: {
                                 Label("Done", systemImage: "checkmark")
                             }
                             .tint(.appPositive)
-                        }
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            Button(role: .destructive) {
-                                delete(item)
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
 
+                            // Periwinkle rather than the teal accent: teal and
+                            // the green of Done read as near-identical when the
+                            // two sit side by side in the same swipe.
                             Button {
                                 enrichment.forceRefresh(item, in: modelContext)
                             } label: {
                                 Label("Refresh", systemImage: "arrow.clockwise")
                             }
-                            .tint(.appAccentAlt)
+                            .tint(.appAccent)
                         }
                     }
                 } header: {
@@ -285,6 +329,7 @@ struct ShelfDetailView: View {
                 .disabled(
                     availableGenres.isEmpty
                         && availableRatingBands.isEmpty
+                        && availableYearBands.isEmpty
                         && availableRuntimeBands.isEmpty
                 )
             }
@@ -335,15 +380,49 @@ struct ShelfDetailView: View {
             FilterSheet(
                 genres: availableGenres,
                 ratingBands: availableRatingBands,
+                yearBands: availableYearBands,
                 runtimeBands: availableRuntimeBands,
                 selectedGenres: $activeGenres,
                 selectedRatings: $activeRatings,
+                selectedYears: $activeYears,
                 selectedRuntimes: $activeRuntimes
             )
         }
         .sheet(isPresented: $showingImport) { ImportView(preselectedShelf: shelf) }
         .sheet(isPresented: $showingEditor) {
             ShelfEditorView(existingCount: 0, editing: shelf)
+        }
+        .confirmationDialog(
+            "Delete “\(pendingDeletion?.name ?? "")”?",
+            isPresented: Binding(
+                get: { pendingDeletion != nil },
+                set: { if !$0 { pendingDeletion = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                if let item = pendingDeletion { delete(item) }
+                pendingDeletion = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDeletion = nil }
+        } message: {
+            Text("This can't be undone. To take something off the shelf because you've watched it, use Done instead.")
+        }
+        .confirmationDialog(
+            "Finished “\(pendingDone?.name ?? "")”?",
+            isPresented: Binding(
+                get: { pendingDone != nil },
+                set: { if !$0 { pendingDone = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button(doneVerb) {
+                if let item = pendingDone { markDone(item) }
+                pendingDone = nil
+            }
+            Button("Cancel", role: .cancel) { pendingDone = nil }
+        } message: {
+            Text("This takes it off \(shelf.name). You'll have a few seconds to undo.")
         }
         .onDisappear { undoDismissTask?.cancel() }
     }
@@ -357,7 +436,7 @@ struct ShelfDetailView: View {
                 Image(systemName: "checkmark.circle.fill")
                     .foregroundStyle(Color.appPositive)
 
-                Text("Removed “\(removed.name)”")
+                Text("Finished “\(removed.name)”")
                     .font(.footnote)
                     .lineLimit(1)
 
@@ -389,6 +468,9 @@ struct ShelfDetailView: View {
                 ForEach(activeRatings.sorted(), id: \.self) { rating in
                     RemovableChip(text: rating) { activeRatings.remove(rating) }
                 }
+                ForEach(activeYears.sorted(), id: \.self) { year in
+                    RemovableChip(text: year) { activeYears.remove(year) }
+                }
                 ForEach(activeRuntimes.sorted(), id: \.self) { runtime in
                     RemovableChip(text: runtime) { activeRuntimes.remove(runtime) }
                 }
@@ -396,6 +478,7 @@ struct ShelfDetailView: View {
                 Button("Clear all") {
                     activeGenres.removeAll()
                     activeRatings.removeAll()
+                    activeYears.removeAll()
                     activeRuntimes.removeAll()
                 }
                 .font(.caption.weight(.medium))
@@ -546,6 +629,7 @@ struct ShelfDetailView: View {
             ) {
                 activeGenres.removeAll()
                 activeRatings.removeAll()
+                activeYears.removeAll()
                 activeRuntimes.removeAll()
             }
         } else {
@@ -705,6 +789,13 @@ struct ShelfDetailView: View {
         let externalID = item.externalID
         let externalSource = item.externalSource
         let enrichmentState = item.enrichment
+        // Added to the model after this snapshot was first written; without
+        // them an undo silently returned the entry stripped of its length,
+        // cast and second score.
+        let runtime = item.runtimeMinutes
+        let castList = item.castList
+        let secondaryRating = item.secondaryRating
+        let secondaryRatingSource = item.secondaryRatingSource
         let shelfRef = shelf
 
         modelContext.delete(item)
@@ -730,6 +821,10 @@ struct ShelfDetailView: View {
                 restored.posterPath = posterPath
                 restored.externalID = externalID
                 restored.externalSource = externalSource
+                restored.runtimeMinutes = runtime
+                restored.castList = castList
+                restored.secondaryRating = secondaryRating
+                restored.secondaryRatingSource = secondaryRatingSource
                 restored.shelf = shelfRef
                 modelContext.insert(restored)
                 try? modelContext.save()

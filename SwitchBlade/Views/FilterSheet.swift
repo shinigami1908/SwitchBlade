@@ -53,7 +53,42 @@ struct RatingBand: Identifiable, Hashable {
     ]
 }
 
-/// Genre, score, and length filters for a shelf.
+/// A period band offered in the filter.
+///
+/// Built from the years actually on the shelf rather than hardcoded, so the
+/// list needs no revisiting in 2030 and a library of recent films isn't padded
+/// with empty decades. Everything before 1990 collapses into one band: the
+/// difference between a 1959 film and a 1974 one rarely decides what you watch
+/// tonight, whereas "old" versus "this decade" does.
+struct YearBand: Identifiable, Hashable {
+    let label: String
+    let range: ClosedRange<Int>
+
+    var id: String { label }
+
+    static let cutoff = 1990
+
+    static func bands(covering years: [Int]) -> [YearBand] {
+        // Guards against a stray year from a mis-parsed title.
+        let valid = years.filter { $0 > 1800 && $0 < 2200 }
+        guard !valid.isEmpty else { return [] }
+
+        var bands: [YearBand] = []
+
+        if valid.contains(where: { $0 < cutoff }) {
+            bands.append(YearBand(label: "Before \(cutoff)", range: 1800...(cutoff - 1)))
+        }
+
+        let decades = Set(valid.filter { $0 >= cutoff }.map { ($0 / 10) * 10 })
+        for decade in decades.sorted() {
+            bands.append(YearBand(label: "\(decade)s", range: decade...(decade + 9)))
+        }
+
+        return bands
+    }
+}
+
+/// Genre, score, period, and length filters for a shelf.
 ///
 /// Every list is built from what is actually on the shelf, so no option here
 /// can return nothing.
@@ -65,24 +100,28 @@ struct RatingBand: Identifiable, Hashable {
 struct FilterSheet: View {
     let genres: [String]
     let ratingBands: [RatingBand]
+    let yearBands: [YearBand]
     let runtimeBands: [RuntimeBand]
 
     @Binding var selectedGenres: Set<String>
     @Binding var selectedRatings: Set<String>
+    @Binding var selectedYears: Set<String>
     @Binding var selectedRuntimes: Set<String>
 
     @Environment(\.dismiss) private var dismiss
 
     private var total: Int {
-        selectedGenres.count + selectedRatings.count + selectedRuntimes.count
+        selectedGenres.count + selectedRatings.count
+            + selectedYears.count + selectedRuntimes.count
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 24) {
-                    if genres.isEmpty && ratingBands.isEmpty && runtimeBands.isEmpty {
-                        Text("Nothing to filter by yet. Genres, scores and lengths appear once entries have filled in.")
+                    if genres.isEmpty && ratingBands.isEmpty
+                        && yearBands.isEmpty && runtimeBands.isEmpty {
+                        Text("Nothing to filter by yet. Genres, scores, years and lengths appear once entries have filled in.")
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .padding(.top, 20)
@@ -101,6 +140,14 @@ struct FilterSheet: View {
                             title: "Rating",
                             options: ratingBands.map(\.label),
                             selection: $selectedRatings
+                        )
+                    }
+
+                    if !yearBands.isEmpty {
+                        group(
+                            title: "Year",
+                            options: yearBands.map(\.label),
+                            selection: $selectedYears
                         )
                     }
 
@@ -123,6 +170,7 @@ struct FilterSheet: View {
                     Button("Clear") {
                         selectedGenres.removeAll()
                         selectedRatings.removeAll()
+                        selectedYears.removeAll()
                         selectedRuntimes.removeAll()
                     }
                     .disabled(total == 0)
