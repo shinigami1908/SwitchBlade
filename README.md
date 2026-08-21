@@ -104,4 +104,9 @@ A few pieces of `Services/` are worth knowing about:
 
 ## Licence
 
-Personal project, no licence granted.
+[MIT](LICENSE) — use it, change it, ship it, just keep the copyright notice.
+
+The licence covers this app's own code. The data it displays belongs to the
+services it comes from, each with its own terms: TMDB, OMDb, IGDB, Steam,
+Wikipedia, Open-Meteo, Merriam-Webster and Wordsmith. Anything built on top of
+this still needs its own keys and still answers to those terms.
