@@ -257,12 +257,16 @@ struct ShelfDetailView: View {
                         // restore — so it takes a deliberate tap rather than a
                         // flick that could happen while scrolling.
                         .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                            // Explicitly red. The destructive role would
-                            // normally colour this itself, but the app-wide
-                            // accent tint overrides it inside a swipe action,
-                            // which left the one dangerous button looking
-                            // exactly like the safe ones.
-                            Button(role: .destructive) {
+                            // No destructive role, deliberately. It makes
+                            // SwiftUI begin its row-removal animation the
+                            // moment the button is tapped, on the assumption
+                            // the entry is going away — but the entry only
+                            // goes once the confirmation is accepted, so the
+                            // row collapsed and sprang back, jolting
+                            // everything below it. The red is set by hand
+                            // instead, which the role would otherwise have
+                            // provided.
+                            Button {
                                 pendingDeletion = item
                             } label: {
                                 Label("Delete", systemImage: "trash")
