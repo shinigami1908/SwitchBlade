@@ -21,6 +21,7 @@ struct ShelfItemDetailView: View {
         var genre = ""
         var vibes = ""
         var rating = 0.0
+        var keepOwnTitle = false
     }
 
     var body: some View {
@@ -200,6 +201,19 @@ struct ShelfItemDetailView: View {
                 }
             }
 
+            if item.playtimeMainLabel != nil || item.playtimeCompletionistLabel != nil {
+                block(title: "How long it takes") {
+                    HStack(spacing: 24) {
+                        if let main = item.playtimeMainLabel {
+                            playtime(main, caption: "Main story")
+                        }
+                        if let full = item.playtimeCompletionistLabel {
+                            playtime(full, caption: "Completionist")
+                        }
+                    }
+                }
+            }
+
             if !item.vibesList.isEmpty {
                 block(title: "Vibes") {
                     FlowLayout(spacing: 7, lineSpacing: 7) {
@@ -236,6 +250,18 @@ struct ShelfItemDetailView: View {
             markDoneButton
 
             metaFooter
+        }
+    }
+
+    private func playtime(_ value: String, caption: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(.system(.title3, design: .rounded, weight: .semibold))
+                .foregroundStyle(Color.appAccent)
+                .monospacedDigit()
+            Text(caption)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -311,6 +337,18 @@ struct ShelfItemDetailView: View {
                 TextField("Title", text: $draft.name)
                     .textFieldStyle(.plain)
                     .font(.subheadline)
+
+                Divider()
+
+                Toggle("Keep my title", isOn: $draft.keepOwnTitle)
+                    .font(.subheadline)
+                    .tint(.appAccent)
+
+                Text(draft.keepOwnTitle
+                     ? "Lookups won't rename this."
+                     : "A lookup will replace this with the official title — which is what turns “rdr” into “Red Dead Redemption”.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
 
             block(title: "Year") {
@@ -373,7 +411,8 @@ struct ShelfItemDetailView: View {
             description: item.descriptionText,
             genre: item.genre,
             vibes: item.vibesList.joined(separator: ", "),
-            rating: item.rating
+            rating: item.rating,
+            keepOwnTitle: item.usesCustomName
         )
         isEditing = true
     }
@@ -388,6 +427,7 @@ struct ShelfItemDetailView: View {
             && trimmedName.compare(item.name, options: .caseInsensitive) != .orderedSame
 
         if !trimmedName.isEmpty { item.name = trimmedName }
+        item.usesCustomName = draft.keepOwnTitle
 
         item.year = Int(draft.year.trimmingCharacters(in: .whitespacesAndNewlines))
         item.descriptionText = draft.description.trimmingCharacters(in: .whitespacesAndNewlines)

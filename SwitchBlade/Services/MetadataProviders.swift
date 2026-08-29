@@ -22,6 +22,9 @@ struct MetadataResult: Sendable {
     /// Film runtime, or a series' typical episode length, in minutes. Zero when
     /// the provider doesn't say.
     var runtimeMinutes: Int = 0
+    /// Game playtimes in minutes: main story, and everything. Zero when unknown.
+    var playtimeMainMinutes: Int = 0
+    var playtimeCompletionistMinutes: Int = 0
 }
 
 // MARK: - TMDB (films and television)

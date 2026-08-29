@@ -21,8 +21,23 @@ struct SeriesExpansionView: View {
     @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
 
+    /// One provider-agnostic series, so the picker doesn't care whether it came
+    /// from TMDB's film collections or IGDB's game collections.
+    struct SeriesOption: Identifiable {
+        let id: String
+        let name: String
+        let yearRange: String?
+        let parts: [Part]
+
+        struct Part: Identifiable {
+            let id: String
+            let title: String
+            let year: Int?
+        }
+    }
+
     @State private var phase: Phase = .searching
-    @State private var chosen: TMDBService.MovieCollection?
+    @State private var chosen: SeriesOption?
     @State private var selectedTitles: Set<String> = []
     @State private var askedModel = false
 
@@ -30,7 +45,7 @@ struct SeriesExpansionView: View {
 
     private enum Phase {
         case searching
-        case collections([TMDBService.MovieCollection])
+        case collections([SeriesOption])
         case titles([AISeriesResult])
         case empty(String)
         case failed(String)
@@ -99,7 +114,7 @@ struct SeriesExpansionView: View {
 
     // MARK: - Picking
 
-    private func collectionPicker(_ collections: [TMDBService.MovieCollection]) -> some View {
+    private func collectionPicker(_ collections: [SeriesOption]) -> some View {
         Section {
             ForEach(collections) { collection in
                 Button {
@@ -116,7 +131,7 @@ struct SeriesExpansionView: View {
 
                         Text([
                             collection.yearRange,
-                            "\(collection.parts.count) films"
+                            "\(collection.parts.count) \(shelf.kind == .game ? "games" : "films")"
                         ].compactMap { $0 }.joined(separator: " · "))
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -130,7 +145,7 @@ struct SeriesExpansionView: View {
         }
     }
 
-    private func partsSection(for collection: TMDBService.MovieCollection) -> some View {
+    private func partsSection(for collection: SeriesOption) -> some View {
         Section {
             ForEach(collection.parts) { part in
                 row(
@@ -227,14 +242,18 @@ struct SeriesExpansionView: View {
     }
 
     private func search() async {
-        // Collections are films only; television has no equivalent on TMDB, so
-        // a TV shelf goes straight to the model rather than searching for
-        // something that cannot exist.
-        guard shelf.kind == .movie else {
-            phase = .empty("TMDB only groups films into collections, so there's nothing to look up for \(shelf.name).")
-            return
+        switch shelf.kind {
+        case .movie: await searchFilms()
+        case .game: await searchGames()
+        default:
+            // Neither provider groups television into collections, so a TV
+            // shelf goes straight to the model rather than searching for
+            // something that cannot exist.
+            phase = .empty("Neither TMDB nor IGDB groups \(shelf.name) into collections, so there's nothing to look up.")
         }
+    }
 
+    private func searchFilms() async {
         guard let key = AppSettings.shared.key(for: .tmdb) else {
             phase = .failed(ServiceError.missingKey("TMDB").errorDescription ?? "No TMDB key.")
             return
@@ -244,11 +263,49 @@ struct SeriesExpansionView: View {
             let found = try await TMDBService.shared.collections(
                 matching: searchTerm, apiKey: key
             )
-            if found.isEmpty {
-                phase = .empty("No collection on TMDB matches “\(searchTerm)”.")
-            } else {
-                phase = .collections(found)
+            let options = found.map { collection in
+                SeriesOption(
+                    id: "tmdb-\(collection.id)",
+                    name: collection.name,
+                    yearRange: collection.yearRange,
+                    parts: collection.parts.map {
+                        SeriesOption.Part(id: "\($0.id)", title: $0.title, year: $0.year)
+                    }
+                )
             }
+            phase = options.isEmpty
+                ? .empty("No collection on TMDB matches “\(searchTerm)”.")
+                : .collections(options)
+        } catch {
+            phase = .failed((error as? ServiceError)?.errorDescription ?? error.localizedDescription)
+        }
+    }
+
+    private func searchGames() async {
+        guard let id = AppSettings.shared.key(for: .igdbClientID),
+              let secret = AppSettings.shared.key(for: .igdbClientSecret)
+        else {
+            phase = .empty("Game series come from IGDB, which isn't set up yet. Add its credentials in Settings, or ask the model instead.")
+            return
+        }
+
+        do {
+            let found = try await IGDBService.shared.collections(
+                matching: searchTerm, clientID: id, clientSecret: secret
+            )
+            let options = found.map { collection in
+                SeriesOption(
+                    id: "igdb-\(collection.id)",
+                    name: collection.name,
+                    yearRange: collection.yearRange,
+                    parts: collection.parts.map {
+                        SeriesOption.Part(id: "\($0.id)", title: $0.title, year: $0.year)
+                    }
+                )
+            }
+            phase = options.isEmpty
+                ? .empty("No series on IGDB matches “\(searchTerm)”.")
+                : .collections(options)
         } catch {
             phase = .failed((error as? ServiceError)?.errorDescription ?? error.localizedDescription)
         }

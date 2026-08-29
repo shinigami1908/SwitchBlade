@@ -125,6 +125,13 @@ final class ShelfItem {
     /// length. Zero means the provider didn't say. Defaulted so entries stored
     /// before this field existed still load.
     var runtimeMinutes: Int = 0
+    /// How long a game takes, in minutes: the main story, and everything.
+    /// Zero means unknown. Films and shows leave both at zero.
+    var playtimeMainMinutes: Int = 0
+    var playtimeCompletionistMinutes: Int = 0
+    /// Set when the name here is deliberately the user's own, so a lookup
+    /// won't replace "rdr" with "Red Dead Redemption" against their wishes.
+    var usesCustomName: Bool = false
     /// 0–10. Zero means "not rated yet".
     var rating: Double
     /// "IMDb", "TMDB", "Metacritic", "AI estimate" — shown next to the score so
@@ -164,12 +171,28 @@ final class ShelfItem {
     /// "1h 47m" / "48m". Nil when the provider had no runtime, so callers can
     /// omit the field entirely rather than print a zero.
     var runtimeLabel: String? {
-        guard runtimeMinutes > 0 else { return nil }
-        let hours = runtimeMinutes / 60
-        let minutes = runtimeMinutes % 60
-        if hours == 0 { return "\(minutes)m" }
-        if minutes == 0 { return "\(hours)h" }
-        return "\(hours)h \(minutes)m"
+        Self.durationLabel(runtimeMinutes)
+    }
+
+    /// Playtimes read in hours — "32h" — because a game measured in minutes is
+    /// unreadable, where a film measured in hours loses the useful precision.
+    var playtimeMainLabel: String? { Self.playLabel(playtimeMainMinutes) }
+    var playtimeCompletionistLabel: String? { Self.playLabel(playtimeCompletionistMinutes) }
+
+    private static func durationLabel(_ minutes: Int) -> String? {
+        guard minutes > 0 else { return nil }
+        let hours = minutes / 60
+        let remainder = minutes % 60
+        if hours == 0 { return "\(remainder)m" }
+        if remainder == 0 { return "\(hours)h" }
+        return "\(hours)h \(remainder)m"
+    }
+
+    private static func playLabel(_ minutes: Int) -> String? {
+        guard minutes > 0 else { return nil }
+        let hours = Double(minutes) / 60
+        if hours < 10 { return String(format: "%.1fh", hours) }
+        return "\(Int(hours.rounded()))h"
     }
 
     var posterURL: URL? {

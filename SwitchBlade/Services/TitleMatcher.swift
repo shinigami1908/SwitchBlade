@@ -11,8 +11,56 @@ import Foundation
 /// Cyberpunk Bartender Action" — the one word matches, so recall is 1.0. The
 /// score has to account for how much of the *candidate* is unaccounted for too.
 enum TitleMatcher {
+    /// True when the query reads as the candidate's initials — "gta" for Grand
+    /// Theft Auto, "rdr" for Red Dead Redemption.
+    ///
+    /// Deliberately narrow. It needs at least three letters, so "up" can't
+    /// claim every two-word title, and it only fires on a query that is a bare
+    /// run of letters, so real short titles like "Se7en" or "1917" are
+    /// untouched. Small joining words are skipped, because nobody includes them
+    /// in an acronym: "lotr" is Lord of the Rings.
+    static func isAcronym(_ query: String, of candidate: String) -> Bool {
+        let letters = query.lowercased()
+        guard letters.count >= 3, letters.count <= 6,
+              letters.allSatisfy({ $0.isLetter })
+        else { return false }
+
+        // Both forms, because usage genuinely goes both ways: LOTR keeps the
+        // joining words of "Lord Of The Rings" while GTA drops none and RDR has
+        // none to drop. Skipping them unconditionally missed LOTR, BOTW and
+        // GOW; keeping them unconditionally would miss the others.
+        let words = TitleParser.normalize(candidate).split(separator: " ")
+        let skipped: Set<String> = ["of", "the", "a", "an", "and", "de", "la"]
+
+        // A leading article is dropped even when internal ones are kept —
+        // "LOTR" is Lord Of The Rings, never TLOTR.
+        let withoutArticle = TitleParser.stripLeadingArticle(
+            TitleParser.normalize(candidate)
+        ).split(separator: " ")
+
+        let full = words.compactMap(\.first).map(String.init).joined().lowercased()
+        let bare = withoutArticle.compactMap(\.first).map(String.init).joined().lowercased()
+        let trimmed = words
+            .filter { !skipped.contains(String($0)) }
+            .compactMap(\.first)
+            .map(String.init)
+            .joined()
+            .lowercased()
+
+        // A prefix match lets "gta" find "Grand Theft Auto V" without also
+        // letting two unrelated letters through.
+        for initials in [full, bare, trimmed] where initials.count >= 3 {
+            if initials == letters || initials.hasPrefix(letters) { return true }
+        }
+        return false
+    }
+
     /// 0…1, where 1 is an exact match after normalisation.
     static func score(candidate: String, query: String) -> Double {
+        // Checked before the token comparison, which would score an acronym
+        // near zero — it shares no whole words with the title it stands for.
+        if isAcronym(query, of: candidate) { return 0.95 }
+
         let candidateText = TitleParser.normalize(stripQualifier(candidate))
         let queryText = TitleParser.normalize(query)
 

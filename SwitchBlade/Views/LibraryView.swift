@@ -7,6 +7,8 @@ struct LibraryView: View {
     @Query(sort: [SortDescriptor(\MediaShelf.sortIndex), SortDescriptor(\MediaShelf.name)])
     private var shelves: [MediaShelf]
 
+    @State private var dropTargetID: UUID?
+
     @State private var showingNewShelf = false
     @State private var showingImport = false
     @State private var shelfPendingDeletion: MediaShelf?
@@ -39,6 +41,32 @@ struct LibraryView: View {
                                 ShelfCard(shelf: shelf)
                             }
                             .buttonStyle(.plain)
+                            // Hold a shelf and drop it on another to reorder.
+                            // The id travels as a string because that's what
+                            // the transferable machinery handles without a
+                            // custom type, and the shelf is looked up again on
+                            // the drop — passing a SwiftData object across a
+                            // drag is not something to rely on.
+                            .draggable(shelf.id.uuidString) {
+                                ShelfCard(shelf: shelf)
+                                    .frame(width: 150)
+                                    .opacity(0.9)
+                            }
+                            .dropDestination(for: String.self) { dropped, _ in
+                                guard let raw = dropped.first,
+                                      let movedID = UUID(uuidString: raw)
+                                else { return false }
+                                reorder(movedID: movedID, onto: shelf)
+                                return true
+                            } isTargeted: { targeted in
+                                dropTargetID = targeted ? shelf.id : nil
+                            }
+                            .overlay {
+                                if dropTargetID == shelf.id {
+                                    RoundedRectangle(cornerRadius: Metrics.cardRadius, style: .continuous)
+                                        .strokeBorder(Color.appAccent, lineWidth: 2)
+                                }
+                            }
                             .contextMenu {
                                 if !shelf.isBuiltIn {
                                     Button(role: .destructive) {
@@ -157,6 +185,29 @@ struct LibraryView: View {
         .padding(.vertical, 11)
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface(radius: Metrics.controlRadius)
+    }
+
+    /// Moves one shelf to another's position and renumbers the rest.
+    ///
+    /// sortIndex is rewritten for every shelf rather than nudged, because the
+    /// seeded shelves all start at indices that were never meant to survive
+    /// reordering — a gap-based scheme would drift and eventually collide.
+    private func reorder(movedID: UUID, onto target: MediaShelf) {
+        guard movedID != target.id,
+              let from = shelves.firstIndex(where: { $0.id == movedID }),
+              let to = shelves.firstIndex(where: { $0.id == target.id })
+        else { return }
+
+        var ordered = shelves
+        let moved = ordered.remove(at: from)
+        ordered.insert(moved, at: to)
+
+        for (index, shelf) in ordered.enumerated() {
+            shelf.sortIndex = index
+        }
+
+        try? modelContext.save()
+        dropTargetID = nil
     }
 
     private var newShelfButton: some View {

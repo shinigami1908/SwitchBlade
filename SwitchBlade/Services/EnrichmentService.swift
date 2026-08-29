@@ -512,8 +512,15 @@ final class EnrichmentService {
             guard let item = byID[outcome.id] else { continue }
 
             if let metadata = outcome.metadata {
-                // Keep the user's own title; providers often normalise
-                // punctuation and subtitles in ways that are jarring in a list.
+                // Adopt the provider's title. This is what turns "rdr" into
+                // "Red Dead Redemption" — the whole point of being able to type
+                // a nickname. Anyone who wants their own wording keeps it by
+                // setting usesCustomName, which editing the title by hand does.
+                if !item.usesCustomName {
+                    let canonical = metadata.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !canonical.isEmpty { item.name = canonical }
+                }
+
                 item.year = metadata.year ?? item.year
                 item.descriptionText = metadata.overview
                 item.genre = metadata.genres.joined(separator: ", ")
@@ -522,6 +529,8 @@ final class EnrichmentService {
                 item.secondaryRating = metadata.secondaryRating
                 item.secondaryRatingSource = metadata.secondaryRatingSource
                 item.runtimeMinutes = metadata.runtimeMinutes
+                item.playtimeMainMinutes = metadata.playtimeMainMinutes
+                item.playtimeCompletionistMinutes = metadata.playtimeCompletionistMinutes
                 item.posterPath = metadata.posterPath
                 item.externalID = metadata.externalID
                 item.externalSource = metadata.externalSource
