@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import UniformTypeIdentifiers
 
 struct LibraryView: View {
     @Environment(\.modelContext) private var modelContext
@@ -42,25 +43,21 @@ struct LibraryView: View {
                             }
                             .buttonStyle(.plain)
                             // Hold a shelf and drop it on another to reorder.
-                            // The id travels as a string because that's what
-                            // the transferable machinery handles without a
-                            // custom type, and the shelf is looked up again on
-                            // the drop — passing a SwiftData object across a
-                            // drag is not something to rely on.
-                            .draggable(shelf.id.uuidString) {
-                                ShelfCard(shelf: shelf)
-                                    .frame(width: 150)
-                                    .opacity(0.9)
+                            // The id travels as a string; the shelf is looked
+                            // up again on the drop rather than carried across.
+                            .onDrag {
+                                NSItemProvider(object: shelf.id.uuidString as NSString)
                             }
-                            .dropDestination(for: String.self) { dropped, _ in
-                                guard let raw = dropped.first,
-                                      let movedID = UUID(uuidString: raw)
-                                else { return false }
-                                reorder(movedID: movedID, onto: shelf)
-                                return true
-                            } isTargeted: { targeted in
-                                dropTargetID = targeted ? shelf.id : nil
-                            }
+                            .onDrop(
+                                of: [.text],
+                                delegate: ShelfDropDelegate(
+                                    target: shelf,
+                                    onReorder: { movedID, target in
+                                        reorder(movedID: movedID, onto: target)
+                                    },
+                                    onTargetChange: { dropTargetID = $0 }
+                                )
+                            )
                             .overlay {
                                 if dropTargetID == shelf.id {
                                     RoundedRectangle(cornerRadius: Metrics.cardRadius, style: .continuous)
@@ -399,5 +396,36 @@ struct ShelfEditorView: View {
 
         try? modelContext.save()
         dismiss()
+    }
+}
+
+/// Reordering drop target.
+///
+/// A hand-rolled delegate rather than `.dropDestination` because that reports
+/// the drop as a copy, and SwiftUI draws a green plus badge for a copy — which
+/// reads as "merge this shelf into that one" rather than "move it here".
+/// Declaring the operation as a move is the only way to get the right
+/// affordance.
+private struct ShelfDropDelegate: DropDelegate {
+    let target: MediaShelf
+    let onReorder: (UUID, MediaShelf) -> Void
+    let onTargetChange: (UUID?) -> Void
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func dropEntered(info: DropInfo) { onTargetChange(target.id) }
+    func dropExited(info: DropInfo) { onTargetChange(nil) }
+
+    func performDrop(info: DropInfo) -> Bool {
+        onTargetChange(nil)
+        guard let provider = info.itemProviders(for: [.text]).first else { return false }
+
+        provider.loadObject(ofClass: NSString.self) { object, _ in
+            guard let raw = object as? String, let movedID = UUID(uuidString: raw) else { return }
+            Task { @MainActor in onReorder(movedID, target) }
+        }
+        return true
     }
 }

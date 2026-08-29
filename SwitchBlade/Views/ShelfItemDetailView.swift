@@ -20,7 +20,6 @@ struct ShelfItemDetailView: View {
         var description = ""
         var genre = ""
         var vibes = ""
-        var rating = 0.0
         var keepOwnTitle = false
     }
 
@@ -370,11 +369,6 @@ struct ShelfItemDetailView: View {
                     .font(.subheadline)
             }
 
-            block(title: "Rating — \(String(format: "%.1f", draft.rating))") {
-                Slider(value: $draft.rating, in: 0...10, step: 0.1)
-                    .tint(.appAccent)
-            }
-
             block(title: "Description") {
                 TextField("Description", text: $draft.description, axis: .vertical)
                     .textFieldStyle(.plain)
@@ -411,7 +405,6 @@ struct ShelfItemDetailView: View {
             description: item.descriptionText,
             genre: item.genre,
             vibes: item.vibesList.joined(separator: ", "),
-            rating: item.rating,
             keepOwnTitle: item.usesCustomName
         )
         isEditing = true
@@ -432,16 +425,11 @@ struct ShelfItemDetailView: View {
         item.year = Int(draft.year.trimmingCharacters(in: .whitespacesAndNewlines))
         item.descriptionText = draft.description.trimmingCharacters(in: .whitespacesAndNewlines)
         item.genre = draft.genre.trimmingCharacters(in: .whitespacesAndNewlines)
-        item.rating = draft.rating
 
         item.vibesList = draft.vibes
             .components(separatedBy: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-
-        if item.rating > 0, item.ratingSource.isEmpty {
-            item.ratingSource = "Yours"
-        }
 
         if titleChanged {
             // Clear what was tied to the previous title so a failed lookup

@@ -74,11 +74,12 @@ actor IGDBService {
         let firstReleaseDate: Int?
         let totalRating: Double?
         let cover: Cover?
+        let collection: CollectionRef?
         let genres: [Named]?
         let involvedCompanies: [Involved]?
 
         enum CodingKeys: String, CodingKey {
-            case id, name, summary, cover, genres
+            case id, name, summary, cover, genres, collection
             case alternativeNames = "alternative_names"
             case firstReleaseDate = "first_release_date"
             case totalRating = "total_rating"
@@ -89,6 +90,7 @@ actor IGDBService {
             enum CodingKeys: String, CodingKey { case imageId = "image_id" }
         }
         struct Named: Decodable { let name: String? }
+        struct CollectionRef: Decodable { let id: Int?; let name: String? }
         struct Involved: Decodable {
             let company: Named?
             let developer: Bool?
@@ -109,8 +111,9 @@ actor IGDBService {
         let body = """
         search "\(escaped)"; \
         fields id,name,alternative_names.name,summary,first_release_date,\
-        total_rating,cover.image_id,genres.name,involved_companies.company.name,\
-        involved_companies.developer,involved_companies.publisher; \
+        total_rating,cover.image_id,genres.name,collection.id,collection.name,\
+        involved_companies.company.name,involved_companies.developer,\
+        involved_companies.publisher; \
         limit 10;
         """
 
@@ -251,19 +254,26 @@ actor IGDBService {
             throw ServiceError.badURL
         }
 
-        let escaped = query.replacingOccurrences(of: "\"", with: "")
-        var request = URLRequest(url: url)
-        request.httpMethod = "POST"
-        request.setValue(clientID, forHTTPHeaderField: "Client-ID")
-        request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
-        request.setValue("text/plain", forHTTPHeaderField: "Content-Type")
-        request.httpBody = Data("""
-        search "\(escaped)"; \
-        fields name,games.name,games.first_release_date; \
-        limit \(limit);
-        """.utf8)
+        var rows = try await collectionRows(
+            searching: query, bearer: bearer, clientID: clientID, limit: limit
+        )
 
-        let rows = try await HTTPClient.shared.send(request, as: [CollectionRow].self)
+        // "GTA" finds no collection, because IGDB files the series under Grand
+        // Theft Auto and only the individual *games* carry the nickname. So the
+        // query is resolved to a game first — which understands abbreviations —
+        // and its full title is searched instead. Going via the game's own
+        // collection field would be more direct, but IGDB has moved games from
+        // `collection` to `collections`, and depending on which is present is
+        // more fragile than simply searching the name.
+        if rows.isEmpty {
+            if let resolved = try? await lookup(
+                name: query, clientID: clientID, clientSecret: clientSecret
+            ), TitleParser.normalize(resolved.title) != TitleParser.normalize(query) {
+                rows = try await collectionRows(
+                    searching: resolved.title, bearer: bearer, clientID: clientID, limit: limit
+                )
+            }
+        }
 
         return rows.compactMap { row -> GameCollection? in
             guard let name = row.name else { return nil }
@@ -283,6 +293,31 @@ actor IGDBService {
             guard !parts.isEmpty else { return nil }
             return GameCollection(id: row.id, name: name, parts: parts)
         }
+    }
+
+    private func collectionRows(
+        searching term: String,
+        bearer: String,
+        clientID: String,
+        limit: Int
+    ) async throws -> [CollectionRow] {
+        guard let url = URL(string: "https://api.igdb.com/v4/collections") else {
+            throw ServiceError.badURL
+        }
+
+        let escaped = term.replacingOccurrences(of: "\"", with: "")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue(clientID, forHTTPHeaderField: "Client-ID")
+        request.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        request.setValue("text/plain", forHTTPHeaderField: "Content-Type")
+        request.httpBody = Data("""
+        search "\(escaped)"; \
+        fields name,games.name,games.first_release_date; \
+        limit \(limit);
+        """.utf8)
+
+        return try await HTTPClient.shared.send(request, as: [CollectionRow].self)
     }
 
     // MARK: - How long it takes

@@ -157,9 +157,12 @@ struct ShelfDetailView: View {
         guard query.count >= 2 else { return nil }
 
         return shelf.items.first { item in
-            guard TitleMatcher.score(candidate: item.name, query: query) >= 0.99 else {
-                return false
-            }
+            // An acronym counts as the same entry: now that "rdr" resolves to
+            // Red Dead Redemption on the way in, it has to resolve to it here
+            // too, or the nickname becomes a way of adding the same game twice.
+            let matches = TitleMatcher.score(candidate: item.name, query: query) >= 0.99
+                || TitleMatcher.isAcronym(query, of: item.name)
+            guard matches else { return false }
             // Two films can share a title — a remake is not a duplicate — so a
             // year on both sides has to agree. A year on neither, or on only
             // one, is treated as the same work.
@@ -178,6 +181,16 @@ struct ShelfDetailView: View {
     private var untaggedItems: [ShelfItem] {
         shelf.items.filter {
             $0.vibesList.isEmpty && $0.enrichment == .completed
+        }
+    }
+
+    /// Games that resolved through IGDB but predate the playtime field.
+    private var untimedGames: [ShelfItem] {
+        guard shelf.kind == .game else { return [] }
+        return shelf.items.filter {
+            $0.playtimeMainMinutes == 0
+                && $0.playtimeCompletionistMinutes == 0
+                && $0.externalSource == "igdb"
         }
     }
 
@@ -221,6 +234,15 @@ struct ShelfDetailView: View {
                 }
             }
 
+            if !untimedGames.isEmpty || enrichment.playtimesRemaining > 0 {
+                Section {
+                    playtimeBanner
+                        .listRowInsets(EdgeInsets(top: 6, leading: Metrics.gutter, bottom: 6, trailing: Metrics.gutter))
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                }
+            }
+
             if !untaggedItems.isEmpty || enrichment.vibesRemaining > 0 {
                 Section {
                     vibeBanner
@@ -252,31 +274,10 @@ struct ShelfDetailView: View {
                         }
                         .listRowBackground(Color.appSurface)
                         .listRowSeparatorTint(Color.appBorder)
-                        // Full swipe is off here on purpose. Delete is the one
-                        // action with no undo — Done keeps a five-second
-                        // restore — so it takes a deliberate tap rather than a
-                        // flick that could happen while scrolling.
-                        .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                            // No destructive role, deliberately. It makes
-                            // SwiftUI begin its row-removal animation the
-                            // moment the button is tapped, on the assumption
-                            // the entry is going away — but the entry only
-                            // goes once the confirmation is accepted, so the
-                            // row collapsed and sprang back, jolting
-                            // everything below it. The red is set by hand
-                            // instead, which the role would otherwise have
-                            // provided.
-                            Button {
-                                pendingDeletion = item
-                            } label: {
-                                Label("Delete", systemImage: "trash")
-                            }
-                            .tint(.appNegative)
-                        }
                         // Done is listed first so it sits at the edge and is
                         // what a full swipe triggers — the common action, and
                         // the one that can be undone.
-                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        .swipeActions(edge: .leading, allowsFullSwipe: true) {
                             // Finishing something takes it off the shelf —
                             // the shelf is the backlog, so a finished entry
                             // has nowhere to sit.
@@ -296,6 +297,27 @@ struct ShelfDetailView: View {
                                 Label("Refresh", systemImage: "arrow.clockwise")
                             }
                             .tint(.appAccent)
+                        }
+                        // Full swipe is off here on purpose. Delete is the one
+                        // action with no undo — Done keeps a five-second
+                        // restore — so it takes a deliberate tap rather than a
+                        // flick that could happen while scrolling.
+                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                            // No destructive role, deliberately. It makes
+                            // SwiftUI begin its row-removal animation the
+                            // moment the button is tapped, on the assumption
+                            // the entry is going away — but the entry only
+                            // goes once the confirmation is accepted, so the
+                            // row collapsed and sprang back, jolting
+                            // everything below it. The red is set by hand
+                            // instead, which the role would otherwise have
+                            // provided.
+                            Button {
+                                pendingDeletion = item
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                            .tint(.appNegative)
                         }
                     }
                 } header: {
@@ -469,6 +491,45 @@ struct ShelfDetailView: View {
     }
 
     // MARK: - Banners and empty state
+
+    /// The same for games, which get their times from IGDB rather than TMDB.
+    private var playtimeBanner: some View {
+        let isWorking = enrichment.playtimesRemaining > 0
+
+        return HStack(spacing: 10) {
+            Image(systemName: "hourglass")
+                .foregroundStyle(Color.appAccentAlt)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(isWorking
+                     ? "Fetching playtimes — \(enrichment.playtimesRemaining) to go"
+                     : "\(untimedGames.count) without playtimes")
+                    .font(.footnote.weight(.medium))
+
+                Text("From IGDB, so it costs nothing against your AI budget.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 6)
+
+            if isWorking {
+                ProgressView().controlSize(.small)
+            } else {
+                Button("Get playtimes") {
+                    enrichment.fillMissingPlaytimes(for: untimedGames, in: modelContext)
+                }
+                .font(.footnote.weight(.semibold))
+                .buttonStyle(.bordered)
+                .tint(.appAccentAlt)
+                .controlSize(.small)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface(radius: Metrics.controlRadius)
+    }
 
     /// Offers the length backfill for entries that predate the runtime field.
     /// Separate from the vibe banner because this one is free — mixing them

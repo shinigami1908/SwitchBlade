@@ -228,6 +228,111 @@ final class EnrichmentService {
         }
     }
 
+    // MARK: - Playtime backfill
+
+    private(set) var playtimesRemaining = 0
+
+    /// Fetches how long games take for entries that predate the field.
+    ///
+    /// IGDB only, and free — the same shape as the runtime backfill, but keyed
+    /// on games that already resolved through IGDB, since that id is what the
+    /// time-to-beat data is looked up by.
+    func fillMissingPlaytimes(for items: [ShelfItem], in context: ModelContext) {
+        guard playtimesRemaining == 0 else { return }
+
+        struct Target: Sendable {
+            let id: UUID
+            /// Absent on anything added before IGDB ids were stored, which is
+            /// most of an existing library — those are resolved by name.
+            let gameID: Int?
+            let name: String
+        }
+
+        let targets: [Target] = items.compactMap { item in
+            guard item.playtimeMainMinutes == 0,
+                  item.playtimeCompletionistMinutes == 0,
+                  item.externalSource == "igdb"
+            else { return nil }
+            return Target(
+                id: item.id,
+                gameID: item.externalID.flatMap(Int.init),
+                name: item.name
+            )
+        }
+
+        guard !targets.isEmpty else { return }
+
+        guard let clientID = AppSettings.shared.key(for: .igdbClientID),
+              let secret = AppSettings.shared.key(for: .igdbClientSecret)
+        else {
+            lastError = ServiceError.missingKey("IGDB").errorDescription
+            return
+        }
+
+        playtimesRemaining = targets.count
+
+        Task {
+            defer { playtimesRemaining = 0 }
+
+            for chunk in targets.chunked(into: 4) {
+                var found: [Resolved] = []
+
+                for target in chunk {
+                    if let gameID = target.gameID {
+                        if let times = try? await IGDBService.shared.playtime(
+                            forGameID: gameID, clientID: clientID, clientSecret: secret
+                        ) {
+                            found.append(Resolved(
+                                id: target.id,
+                                main: times.main,
+                                completionist: times.completionist,
+                                gameID: nil
+                            ))
+                        }
+                    } else if let result = try? await IGDBService.shared.lookup(
+                        name: target.name, clientID: clientID, clientSecret: secret
+                    ), result.playtimeMainMinutes > 0 || result.playtimeCompletionistMinutes > 0 {
+                        // Resolving by name also recovers the id, so this entry
+                        // never has to be searched for again.
+                        found.append(Resolved(
+                            id: target.id,
+                            main: result.playtimeMainMinutes,
+                            completionist: result.playtimeCompletionistMinutes,
+                            gameID: result.externalID
+                        ))
+                    }
+                }
+
+                applyPlaytimes(found, in: context)
+                playtimesRemaining = max(0, playtimesRemaining - chunk.count)
+            }
+        }
+    }
+
+    private struct Resolved: Sendable {
+        let id: UUID
+        let main: Int
+        let completionist: Int
+        let gameID: String?
+    }
+
+    private func applyPlaytimes(_ rows: [Resolved], in context: ModelContext) {
+        guard !rows.isEmpty else { return }
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        guard let all = try? context.fetch(FetchDescriptor<ShelfItem>()) else { return }
+
+        for item in all {
+            guard let row = byID[item.id] else { continue }
+            item.playtimeMainMinutes = row.main
+            item.playtimeCompletionistMinutes = row.completionist
+            if let gameID = row.gameID, item.externalID == nil {
+                item.externalID = gameID
+            }
+        }
+
+        try? context.save()
+    }
+
     private func applyRuntimes(_ pairs: [(UUID, Int)], in context: ModelContext) {
         guard !pairs.isEmpty else { return }
 
